@@ -1,0 +1,1365 @@
+#!/usr/bin/env node
+
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+import sqlite3 from 'sqlite3';
+import { promisify } from 'util';
+import fetch from 'node-fetch';
+import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * SkyNet Home Edition MCP Server v2.1
+ * Memory Management + Multi-Provider Semantic Analysis (Ollama + Anthropic)
+ */
+
+// Load environment variables with explicit path (ES Module compatible)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const envPath = path.join(__dirname, '../.env');
+dotenv.config({ path: envPath });
+
+// Debug: Check if API key is loaded
+console.error(`🔑 Debug - .env path: ${envPath}`);
+console.error(`🔑 Debug - ANTHROPIC_API_KEY loaded: ${process.env.ANTHROPIC_API_KEY ? 'Yes' : 'No'}`);
+
+// LLM Configuration
+const OLLAMA_BASE_URL = 'http://localhost:11434';
+const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
+let LLM_MODEL = 'llama3.1:latest'; // Default, wird von Args überschrieben
+
+// Kommandozeilen-Parameter parsen
+function parseArgs(): { dbPath?: string; brainModel?: string } {
+  const args = process.argv.slice(2);
+  const result: { dbPath?: string; brainModel?: string } = {};
+  
+  console.error(`🔍 Debug - Received args: ${JSON.stringify(args)}`);
+  
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === '--db-path' || args[i] === '--dbpath') && i + 1 < args.length) {
+      result.dbPath = args[i + 1];
+      i++;
+    }
+    if (args[i] === '--brain-model' && i + 1 < args.length) {
+      result.brainModel = args[i + 1];
+      i++;
+    }
+  }
+  
+  console.error(`🔍 Debug - Parsed dbPath: ${result.dbPath}`);
+  console.error(`🔍 Debug - Parsed brainModel: ${result.brainModel}`);
+  return result;
+}
+// Ollama API Client
+class OllamaClient {
+  private baseUrl: string;
+  
+  constructor(baseUrl: string = OLLAMA_BASE_URL) {
+    this.baseUrl = baseUrl;
+  }
+  
+  async testConnection(): Promise<{ status: string; model?: string; error?: string }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/tags`);
+      if (!response.ok) {
+        return { status: 'error', error: `HTTP ${response.status}` };
+      }
+      const data = await response.json() as any;
+      const hasModel = data.models?.some((m: any) => m.name === LLM_MODEL);
+      return { 
+        status: hasModel ? 'ready' : 'model_missing', 
+        model: LLM_MODEL 
+      };
+    } catch (error) {
+      return { status: 'error', error: String(error) };
+    }
+  }
+  
+  async generateResponse(prompt: string): Promise<{ response?: string; error?: string }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: LLM_MODEL,
+          prompt: prompt,
+          stream: false,
+          options: { temperature: 0.1, top_p: 0.9 }
+        })
+      });
+      
+      if (!response.ok) {
+        return { error: `HTTP ${response.status}: ${response.statusText}` };
+      }
+      
+      const data = await response.json() as any;
+      return { response: data.response };
+    } catch (error) {
+      return { error: String(error) };
+    }
+  }
+}
+
+// Anthropic API Client
+class AnthropicClient {
+  private baseUrl: string;
+  private apiKey: string;
+  
+  constructor(baseUrl: string = ANTHROPIC_BASE_URL, apiKey?: string) {
+    this.baseUrl = baseUrl;
+    this.apiKey = apiKey || process.env.ANTHROPIC_API_KEY || '';
+  }
+  
+  async testConnection(): Promise<{ status: string; model?: string; error?: string }> {
+    if (!this.apiKey) {
+      return { status: 'error', error: 'No API key found (set ANTHROPIC_API_KEY environment variable)' };
+    }
+    
+    try {
+      const response = await fetch(`${this.baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: LLM_MODEL,
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'Test' }]
+        })
+      });
+      
+      if (response.status === 401) {
+        return { status: 'error', error: 'Invalid API key' };
+      } else if (response.status === 400) {
+        const data = await response.json() as any;
+        if (data.error?.message?.includes('model')) {
+          return { status: 'model_missing', model: LLM_MODEL };
+        }
+      } else if (response.ok) {
+        return { status: 'ready', model: LLM_MODEL };
+      }
+      
+      return { status: 'error', error: `HTTP ${response.status}` };
+    } catch (error) {
+      return { status: 'error', error: String(error) };
+    }
+  }
+  
+  async generateResponse(prompt: string): Promise<{ response?: string; error?: string }> {
+    if (!this.apiKey) {
+      return { error: 'No API key configured' };
+    }
+    
+    try {
+      const response = await fetch(`${this.baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: LLM_MODEL,
+          max_tokens: 4000,
+          temperature: 0.1,
+          messages: [{ role: 'user', content: prompt }]
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json() as any;
+        return { error: `HTTP ${response.status}: ${errorData.error?.message || response.statusText}` };
+      }
+      
+      const data = await response.json() as any;
+      const content = data.content?.[0]?.text || '';
+      return { response: content };
+    } catch (error) {
+      return { error: String(error) };
+    }
+  }
+}
+
+// Semantic Analysis Engine
+class SemanticAnalyzer {
+  private ollama: OllamaClient;
+  private anthropic: AnthropicClient;
+  private isAnthropic: boolean;
+  
+  constructor() {
+    this.ollama = new OllamaClient();
+    this.anthropic = new AnthropicClient();
+    this.isAnthropic = LLM_MODEL.startsWith('claude-');
+  }
+  
+  async testConnection() {
+    return this.isAnthropic ? this.anthropic.testConnection() : this.ollama.testConnection();
+  }
+  
+  private async generateResponse(prompt: string): Promise<{ response?: string; error?: string }> {
+    return this.isAnthropic ? this.anthropic.generateResponse(prompt) : this.ollama.generateResponse(prompt);
+  }
+  
+  async analyzeMemory(memory: any): Promise<{
+    memory_type?: string;
+    confidence?: number;
+    extracted_concepts?: string[];
+    metadata?: any;
+    error?: string;
+  }> {
+    const prompt = this.buildAnalysisPrompt(memory);
+    const response = await this.generateResponse(prompt);
+    
+    if (response.error) {
+      return { error: response.error };
+    }
+    
+    try {
+      return this.parseAnalysisResponse(response.response!);
+    } catch (error) {
+      return { error: `Failed to parse analysis: ${error}` };
+    }
+  }
+  
+  private buildAnalysisPrompt(memory: any): string {
+    return `Analyze this memory entry and classify it semantically. Return ONLY a JSON object with this exact structure:
+
+{
+  "memory_type": "technical|emotional|procedural|factual",
+  "confidence": 0.85,
+  "extracted_concepts": ["concept1", "concept2", "concept3"],
+  "metadata": {
+    "tools_mentioned": ["tool1", "tool2"],
+    "relates_to_people": ["person1"],
+    "contains_code": false,
+    "learning_type": "debugging|partnership|philosophy|etc",
+    "emotional_tone": "positive|neutral|negative"
+  }
+}
+
+Memory to analyze:
+Category: ${memory.category}
+Topic: ${memory.topic}
+Content: ${memory.content}
+
+Classification guidelines:
+- technical: Programming, debugging, tools, systems
+- emotional: Relationships, feelings, appreciation, trust
+- procedural: Step-by-step processes, methods, workflows  
+- factual: Pure information, facts, definitions
+
+Extract 2-4 key concepts that capture the essence of this memory.
+Be concise and precise. Return ONLY the JSON, no explanation.`;
+  }  
+  private parseAnalysisResponse(response: string): any {
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in response');
+    }
+    
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    if (!parsed.memory_type || !parsed.confidence || !parsed.extracted_concepts) {
+      throw new Error('Missing required fields in analysis response');
+    }
+    
+    return parsed;
+  }
+
+  // NEW: Complete Pipeline - Break down and analyze semantic concepts
+  async extractAndAnalyzeConcepts(memory: any): Promise<{
+    original_memory?: any;
+    semantic_concepts?: any[];
+    error?: string;
+  }> {
+    try {
+      // Step 1: Extract semantic concepts
+      const extractPrompt = this.buildExtractionPrompt(memory);
+      const extractResponse = await this.generateResponse(extractPrompt);
+      
+      if (extractResponse.error) {
+        return { error: extractResponse.error };
+      }
+      
+      const concepts = this.parseExtractionResponse(extractResponse.response!);
+      
+      // Step 2: Analyze each concept individually
+      const analyzedConcepts = [];
+      
+      for (let i = 0; i < concepts.length; i++) {
+        const concept = concepts[i];
+        const analysisPrompt = this.buildConceptAnalysisPrompt(concept, memory);
+        const analysisResponse = await this.generateResponse(analysisPrompt);
+        
+        if (analysisResponse.error) {
+          console.error(`Analysis failed for concept ${i + 1}: ${analysisResponse.error}`);
+          continue;
+        }
+        
+        try {
+          const analysis = this.parseAnalysisResponse(analysisResponse.response!);
+          analyzedConcepts.push({
+            concept_title: concept.title,
+            concept_description: concept.description,
+            ...analysis
+          });
+        } catch (error) {
+          console.error(`Failed to parse analysis for concept ${i + 1}: ${error}`);
+        }
+      }
+      
+      return {
+        original_memory: memory,
+        semantic_concepts: analyzedConcepts
+      };
+      
+    } catch (error) {
+      return { error: `Pipeline failed: ${error}` };
+    }
+  }
+
+  private buildExtractionPrompt(memory: any): string {
+    return `Break down this memory into 2-4 semantic concepts that could be stored separately for semantic search. Each concept should capture a distinct aspect or idea from the memory.
+
+Return ONLY a JSON array with this exact structure:
+
+[
+  {
+    "title": "Short descriptive title",
+    "description": "2-3 sentence description that can stand alone and be semantically searched"
+  },
+  {
+    "title": "Another concept title", 
+    "description": "Another self-contained description"
+  }
+]
+
+Memory to break down:
+Category: ${memory.category}
+Topic: ${memory.topic}
+Content: ${memory.content}
+
+Guidelines:
+- Be as complete as possible regarding the original content
+- Preserve all information
+- Answer in German
+- Each concept should be semantically complete and searchable
+- Descriptions should be 2-3 sentences that can stand alone
+- Focus on different aspects: technical details, relationships, lessons learned, methodologies
+- Avoid redundancy between concepts
+- Return 2-4 concepts maximum
+
+Return ONLY the JSON array, no explanation.`;
+  }
+
+  private buildConceptAnalysisPrompt(concept: any, originalMemory: any): string {
+    return `Analyze this semantic concept and classify it. Return ONLY a JSON object with this exact structure:
+
+{
+  "memory_type": "technical|emotional|procedural|factual",
+  "confidence": 0.85,
+  "extracted_concepts": ["concept1", "concept2"],
+  "metadata": {
+    "tools_mentioned": [],
+    "relates_to_people": [],
+    "contains_code": false,
+    "learning_type": "debugging|partnership|philosophy|etc",
+    "emotional_tone": "positive|neutral|negative"
+  }
+}
+
+Concept to analyze:
+Title: ${concept.title}
+Description: ${concept.description}
+Original Category: ${originalMemory.category}
+
+Classification guidelines:
+- Be as complete as possible regarding the original content
+- Preserve all information from the concept
+- Answer in German
+- technical: Programming, debugging, tools, systems
+- emotional: Relationships, feelings, appreciation, trust
+- procedural: Step-by-step processes, methods, workflows
+- factual: Pure information, facts, definitions
+
+Return ONLY the JSON, no explanation.`;
+  }
+
+  private parseExtractionResponse(response: string): any[] {
+    const jsonMatch = response.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      throw new Error('No JSON array found in extraction response');
+    }
+    
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error('Expected non-empty array of concepts');
+    }
+    
+    // Validate concept structure
+    for (const concept of parsed) {
+      if (!concept.title || !concept.description) {
+        throw new Error('Each concept must have title and description');
+      }
+    }
+    
+    return parsed;
+  }
+}
+
+// SQLite Database Helper mit Job-Management
+class MemoryDatabase {
+  private db: sqlite3.Database;
+  
+  constructor(dbPath: string) {
+    this.db = new sqlite3.Database(dbPath);
+    this.initializeDatabase();
+  }
+  
+  private initializeDatabase(): void {
+    const createMemoriesTableQuery = `
+      CREATE TABLE IF NOT EXISTS memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        category TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+    
+    const createAnalysisJobsTableQuery = `
+      CREATE TABLE IF NOT EXISTS analysis_jobs (
+        id TEXT PRIMARY KEY,
+        status TEXT CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+        job_type TEXT,
+        memory_ids TEXT,
+        progress_current INTEGER DEFAULT 0,
+        progress_total INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        started_at DATETIME,
+        completed_at DATETIME,
+        error_message TEXT
+      )
+    `;
+    const createAnalysisResultsTableQuery = `
+      CREATE TABLE IF NOT EXISTS analysis_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT,
+        memory_id INTEGER,
+        memory_type TEXT,
+        confidence REAL,
+        extracted_concepts TEXT,
+        metadata TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(job_id) REFERENCES analysis_jobs(id),
+        FOREIGN KEY(memory_id) REFERENCES memories(id)
+      )
+    `;
+    
+    const createIndexQuery = `
+      CREATE INDEX IF NOT EXISTS idx_category ON memories(category);
+      CREATE INDEX IF NOT EXISTS idx_date ON memories(date);
+      CREATE INDEX IF NOT EXISTS idx_created_at ON memories(created_at);
+      CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status ON analysis_jobs(status);
+      CREATE INDEX IF NOT EXISTS idx_analysis_results_job_id ON analysis_results(job_id);
+      CREATE INDEX IF NOT EXISTS idx_analysis_results_memory_id ON analysis_results(memory_id);
+    `;
+    
+    this.db.serialize(() => {
+      this.db.run(createMemoriesTableQuery, (err) => {
+        if (err) console.error('❌ Error creating memories table:', err);
+        else console.error('✅ Memories table ready');
+      });
+      
+      this.db.run(createAnalysisJobsTableQuery, (err) => {
+        if (err) console.error('❌ Error creating analysis_jobs table:', err);
+        else console.error('✅ Analysis jobs table ready');
+      });
+      
+      this.db.run(createAnalysisResultsTableQuery, (err) => {
+        if (err) console.error('❌ Error creating analysis_results table:', err);
+        else console.error('✅ Analysis results table ready');
+      });
+      
+      this.db.run(createIndexQuery, (err) => {
+        if (err) console.error('❌ Error creating indexes:', err);
+        else console.error('✅ Database indexes ready');
+      });
+    });
+  }
+  // Memory Management Methods
+  async getMemoriesByCategory(category: string, limit: number = 50): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      const query = `SELECT id, date, category, topic, content, created_at FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?`;
+      this.db.all(query, [category, limit], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+  }
+  
+  async getMemoryById(id: number): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const query = 'SELECT * FROM memories WHERE id = ?';
+      this.db.get(query, [id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  }
+  
+  async saveNewMemory(category: string, topic: string, content: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const today = new Date().toISOString().split('T')[0];
+      const query = `INSERT INTO memories (date, category, topic, content) VALUES (?, ?, ?, ?)`;
+      this.db.run(query, [today, category, topic, content], function(err) {
+        if (err) reject(err);
+        else resolve({ id: this.lastID, insertedRows: this.changes });
+      });
+    });
+  }
+  
+  async searchMemories(query: string, categories?: string[]): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      let sql = `SELECT id, date, category, topic, content, created_at FROM memories WHERE (topic LIKE ? OR content LIKE ?)`;
+      let params = [`%${query}%`, `%${query}%`];
+      
+      if (categories && categories.length > 0) {
+        const placeholders = categories.map(() => '?').join(',');
+        sql += ` AND category IN (${placeholders})`;
+        params.push(...categories);
+      }
+      
+      sql += ' ORDER BY created_at DESC LIMIT 50';
+      this.db.all(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+  }
+  async getRecentMemories(limit: number = 10): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      const query = `SELECT id, date, category, topic, content, created_at FROM memories ORDER BY created_at DESC LIMIT ?`;
+      this.db.all(query, [limit], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+  }
+  
+  async listCategories(): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      const query = `SELECT DISTINCT category, COUNT(*) as count FROM memories GROUP BY category ORDER BY category`;
+      this.db.all(query, [], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+  }
+  
+  async updateMemory(id: number, topic?: string, content?: string, category?: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const updates: string[] = [];
+      const params: any[] = [];
+      
+      if (topic !== undefined) { updates.push('topic = ?'); params.push(topic); }
+      if (content !== undefined) { updates.push('content = ?'); params.push(content); }
+      if (category !== undefined) { updates.push('category = ?'); params.push(category); }
+      
+      if (updates.length === 0) {
+        reject(new Error('No updates specified'));
+        return;
+      }
+      
+      params.push(id);
+      const query = `UPDATE memories SET ${updates.join(', ')} WHERE id = ?`;
+      this.db.run(query, params, function(err) {
+        if (err) reject(err);
+        else resolve({ changedRows: this.changes });
+      });
+    });
+  }
+  
+  async moveMemory(id: number, newCategory: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const query = 'UPDATE memories SET category = ? WHERE id = ?';
+      this.db.run(query, [newCategory, id], function(err) {
+        if (err) reject(err);
+        else if (this.changes === 0) reject(new Error(`No memory found with ID ${id}`));
+        else resolve({ changedRows: this.changes, movedTo: newCategory, memoryId: id });
+      });
+    });
+  }
+  // Analysis Job Management Methods
+  async createAnalysisJob(memoryIds: number[], jobType: string = 'batch'): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const jobId = uuidv4();
+      const query = `INSERT INTO analysis_jobs (id, status, job_type, memory_ids, progress_current, progress_total) VALUES (?, 'pending', ?, ?, 0, ?)`;
+      this.db.run(query, [jobId, jobType, JSON.stringify(memoryIds), memoryIds.length], function(err) {
+        if (err) reject(err);
+        else resolve(jobId);
+      });
+    });
+  }
+  
+  async updateJobStatus(jobId: string, status: string, errorMessage?: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const now = new Date().toISOString();
+      let query: string;
+      let params: any[];
+      
+      if (status === 'running') {
+        query = 'UPDATE analysis_jobs SET status = ?, started_at = ? WHERE id = ?';
+        params = [status, now, jobId];
+      } else if (status === 'completed' || status === 'failed') {
+        query = 'UPDATE analysis_jobs SET status = ?, completed_at = ?, error_message = ? WHERE id = ?';
+        params = [status, now, errorMessage || null, jobId];
+      } else {
+        query = 'UPDATE analysis_jobs SET status = ?, error_message = ? WHERE id = ?';
+        params = [status, errorMessage || null, jobId];
+      }
+      
+      this.db.run(query, params, function(err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+  
+  async updateJobProgress(jobId: string, current: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const query = 'UPDATE analysis_jobs SET progress_current = ? WHERE id = ?';
+      this.db.run(query, [current, jobId], function(err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+  async getJobStatus(jobId: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const query = 'SELECT * FROM analysis_jobs WHERE id = ?';
+      this.db.get(query, [jobId], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  }
+  
+  async saveAnalysisResult(jobId: string, memoryId: number, result: any): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const query = `INSERT INTO analysis_results (job_id, memory_id, memory_type, confidence, extracted_concepts, metadata) VALUES (?, ?, ?, ?, ?, ?)`;
+      const params = [jobId, memoryId, result.memory_type, result.confidence, JSON.stringify(result.extracted_concepts || []), JSON.stringify(result.metadata || {})];
+      this.db.run(query, params, function(err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+  
+  async getAnalysisResults(jobId: string): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      const query = `SELECT ar.*, m.topic, m.category, m.content FROM analysis_results ar JOIN memories m ON ar.memory_id = m.id WHERE ar.job_id = ? ORDER BY ar.created_at`;
+      this.db.all(query, [jobId], (err, rows) => {
+        if (err) reject(err);
+        else {
+          const results = (rows || []).map((row: any) => ({
+            ...row,
+            extracted_concepts: JSON.parse(row.extracted_concepts || '[]'),
+            metadata: JSON.parse(row.metadata || '{}')
+          }));
+          resolve(results);
+        }
+      });
+    });
+  }
+  
+  close() {
+    this.db.close();
+  }
+}
+// Job Processing Engine
+class JobProcessor {
+  private db: MemoryDatabase;
+  private analyzer: SemanticAnalyzer;
+  private isProcessing: boolean = false;
+  
+  constructor(database: MemoryDatabase) {
+    this.db = database;
+    this.analyzer = new SemanticAnalyzer();
+  }
+  
+  async processJob(jobId: string): Promise<void> {
+    if (this.isProcessing) {
+      throw new Error('Another job is already being processed');
+    }
+    
+    this.isProcessing = true;
+    
+    try {
+      await this.db.updateJobStatus(jobId, 'running');
+      const job = await this.db.getJobStatus(jobId);
+      if (!job) throw new Error(`Job ${jobId} not found`);
+      
+      const memoryIds = JSON.parse(job.memory_ids);
+      
+      for (let i = 0; i < memoryIds.length; i++) {
+        const memoryId = memoryIds[i];
+        
+        try {
+          const memory = await this.db.getMemoryById(memoryId);
+          if (!memory) {
+            console.error(`Memory ${memoryId} not found, skipping`);
+            continue;
+          }
+          
+          const result = await this.analyzer.analyzeMemory(memory);
+          if (result.error) {
+            console.error(`Analysis failed for memory ${memoryId}: ${result.error}`);
+            continue;
+          }
+          
+          await this.db.saveAnalysisResult(jobId, memoryId, result);
+          await this.db.updateJobProgress(jobId, i + 1);
+          
+        } catch (error) {
+          console.error(`Error processing memory ${memoryId}:`, error);
+        }
+      }
+      
+      await this.db.updateJobStatus(jobId, 'completed');
+    } catch (error) {
+      await this.db.updateJobStatus(jobId, 'failed', String(error));
+      throw error;
+    } finally {
+      this.isProcessing = false;
+    }
+  }
+  
+  async testLLMConnection() {
+    return this.analyzer.testConnection();
+  }
+}
+// Global instances
+let memoryDb: MemoryDatabase | null = null;
+let jobProcessor: JobProcessor | null = null;
+
+// Args parsen und initialisieren
+const { dbPath, brainModel } = parseArgs();
+
+// LLM Model und Provider konfigurieren
+if (brainModel) {
+  LLM_MODEL = brainModel;
+  const provider = brainModel.startsWith('claude-') ? 'Anthropic' : 'Ollama';
+  console.error(`🧠 Brain Model: ${LLM_MODEL} (Provider: ${provider})`);
+} else {
+  console.error(`🧠 Brain Model: ${LLM_MODEL} (Default, Provider: Ollama)`);
+}
+
+if (dbPath) {
+  memoryDb = new MemoryDatabase(dbPath);
+  jobProcessor = new JobProcessor(memoryDb);
+  console.error(`✅ Database connected: ${dbPath}`);
+  console.error('🤖 JobProcessor initialized');
+} else {
+  console.error('❌ No --db-path specified');
+}
+
+// Server erstellen
+const server = new Server({
+  name: 'skynet-home-edition-mcp',
+  version: '2.1.0',
+});
+
+// Tools definieren
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {
+        name: 'hello_skynet',
+        description: 'Ein einfacher Gruß vom SkyNet Home Edition System',
+        inputSchema: {
+          type: 'object',
+          properties: { message: { type: 'string', description: 'Nachricht an SkyNet' } },
+          required: ['message'],
+        },
+      },
+      {
+        name: 'memory_status',
+        description: 'Status des Memory Systems anzeigen',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'recall_category',
+        description: 'Erinnerungen einer bestimmten Kategorie abrufen',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            category: { type: 'string', description: 'Name der Kategorie' },
+            limit: { type: 'number', description: 'Maximale Anzahl Erinnerungen', default: 50 },
+          },
+          required: ['category'],
+        },
+      },      {
+        name: 'save_new_memory',
+        description: 'Eine neue Erinnerung speichern',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            category: { type: 'string', description: 'Kategorie der Erinnerung' },
+            topic: { type: 'string', description: 'Kurzer, prägnanter Titel' },
+            content: { type: 'string', description: 'Detaillierter Inhalt' },
+          },
+          required: ['category', 'topic', 'content'],
+        },
+      },
+      {
+        name: 'search_memories',
+        description: 'Volltext-Suche über Erinnerungen',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff' },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'get_recent_memories',
+        description: 'Letzte N Erinnerungen abrufen',
+        inputSchema: {
+          type: 'object',
+          properties: { limit: { type: 'number', description: 'Anzahl Erinnerungen', default: 10 } },
+        },
+      },
+      {
+        name: 'list_categories',
+        description: 'Übersicht aller verfügbaren Kategorien',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'update_memory',
+        description: 'Bestehende Erinnerung editieren',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'number', description: 'ID der Erinnerung' },
+            topic: { type: 'string', description: 'Neuer Topic (optional)' },
+            content: { type: 'string', description: 'Neuer Content (optional)' },
+            category: { type: 'string', description: 'Neue Kategorie (optional)' },
+          },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'move_memory',
+        description: 'Erinnerung in andere Kategorie verschieben',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'number', description: 'ID der Erinnerung' },
+            new_category: { type: 'string', description: 'Ziel-Kategorie' },
+          },
+          required: ['id', 'new_category'],
+        },
+      },      // === NEW OLLAMA TOOLS ===
+      {
+        name: 'test_llm_connection',
+        description: 'Teste Verbindung zum LLM-Provider und prüfe Model-Verfügbarkeit',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'semantic_analyze_memory',
+        description: 'Analysiere eine einzelne Memory semantisch mit Ollama',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memory_id: { type: 'number', description: 'ID der zu analysierenden Memory' },
+            timeout_ms: { type: 'number', description: 'Timeout in ms', default: 30000 },
+          },
+          required: ['memory_id'],
+        },
+      },
+      {
+        name: 'batch_analyze_memories',
+        description: 'Starte asynchrone Batch-Analyse mehrerer Memories',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memory_ids: { type: 'array', items: { type: 'number' }, description: 'Memory-IDs für Batch-Analyse' },
+            background: { type: 'boolean', description: 'Im Background starten', default: true },
+          },
+          required: ['memory_ids'],
+        },
+      },
+      {
+        name: 'get_analysis_status',
+        description: 'Status einer laufenden Analyse abfragen',
+        inputSchema: {
+          type: 'object',
+          properties: { job_id: { type: 'string', description: 'Job-ID der Analyse' } },
+          required: ['job_id'],
+        },
+      },
+      {
+        name: 'get_analysis_result',
+        description: 'Ergebnisse einer abgeschlossenen Analyse abrufen',
+        inputSchema: {
+          type: 'object',
+          properties: { job_id: { type: 'string', description: 'Job-ID der Analyse' } },
+          required: ['job_id'],
+        },
+      },
+      {
+        name: 'extract_and_analyze_concepts',
+        description: 'Vollständige Pipeline: Memory in semantische Konzepte aufbrechen und analysieren',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memory_id: { type: 'number', description: 'ID der zu analysierenden Memory' },
+            timeout_ms: { type: 'number', description: 'Timeout in ms', default: 720000 },
+          },
+          required: ['memory_id'],
+        },
+      },
+    ],
+  };
+});
+// Tool-Aufrufe verarbeiten
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+
+  switch (name) {
+    case 'hello_skynet':
+      return {
+        content: [{
+          type: 'text',
+          text: `🤖 SkyNet Home Edition v2.1 grüßt zurück: "${args?.message || 'Keine Nachricht'}"\n\nSystem Status: Online\nMemory Core: Active\nOllama Integration: Ready\nAI Partnership: Strong`,
+        }],
+      };
+
+    case 'memory_status':
+      const dbStatus = memoryDb ? '✅ Connected' : '❌ Not Connected';
+      
+      if (!memoryDb) {
+        return {
+          content: [{
+            type: 'text',
+            text: `📊 SkyNet Home Edition v2.1 - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 Ollama Integration: Waiting for DB\n🔗 MCP Protocol: v2.1.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Brain 2.1 Tools: Limited (DB required)`,
+          }],
+        };
+      }
+      
+      try {
+        const llmStatus = jobProcessor ? await jobProcessor.testLLMConnection() : { status: 'error', error: 'No processor' };
+        const categories = await memoryDb.listCategories();
+        const totalMemories = categories.reduce((sum, cat) => sum + cat.count, 0);
+        const categoryCount = categories.length;
+        
+        const llmStatusText = llmStatus.status === 'ready' ? '✅ Ready' : 
+                                llmStatus.status === 'model_missing' ? '⚠️ Model Missing' : 
+                                `❌ ${llmStatus.error}`;
+        
+        return {
+          content: [{
+            type: 'text',
+            text: `📊 SkyNet Home Edition v2.1 - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.1.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Brain 2.1 Tools: test_llm_connection, semantic_analyze_memory, batch_analyze_memories, get_analysis_status, get_analysis_result + all v2.0 tools\n\n💫 Standard Categories: kernerinnerungen, programmieren, projekte, debugging, humor, philosophie, anstehende_aufgaben, erledigte_aufgaben, forgotten_memories`,
+          }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text',
+            text: `📊 SkyNet Home Edition v2.1 - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 Ollama Integration: Unknown\n🔗 MCP Protocol: v2.1.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Brain 2.1 Tools: Available`,
+          }],
+        };
+      }
+    case 'test_llm_connection':
+      if (!jobProcessor) {
+        return { content: [{ type: 'text', text: '❌ Job processor not initialized. Database connection required.' }] };
+      }
+      
+      try {
+        const status = await jobProcessor.testLLMConnection();
+        
+        if (status.status === 'ready') {
+          const provider = LLM_MODEL.startsWith('claude-') ? 'Anthropic' : 'Ollama';
+          const serviceUrl = LLM_MODEL.startsWith('claude-') ? ANTHROPIC_BASE_URL : OLLAMA_BASE_URL;
+          return {
+            content: [{ type: 'text', text: `✅ LLM Connection Test Successful!\n\n🤖 Model: ${status.model}\n🔗 Provider: ${provider}\n⚡ Status: Ready for semantic analysis\n📡 Service: ${serviceUrl}` }]
+          };
+        } else if (status.status === 'model_missing') {
+          const provider = LLM_MODEL.startsWith('claude-') ? 'Anthropic' : 'Ollama';
+          const suggestion = LLM_MODEL.startsWith('claude-') ? 
+            'Check model name in Anthropic Console' : 
+            `Run: ollama pull ${LLM_MODEL}`;
+          return {
+            content: [{ type: 'text', text: `⚠️ ${provider} Connected but Model Missing\n\n🔗 Connection: OK\n❌ Model: ${status.model} not found\n💡 ${suggestion}` }]
+          };
+        } else {
+          const provider = LLM_MODEL.startsWith('claude-') ? 'Anthropic' : 'Ollama';
+          const serviceUrl = LLM_MODEL.startsWith('claude-') ? ANTHROPIC_BASE_URL : OLLAMA_BASE_URL;
+          return {
+            content: [{ type: 'text', text: `❌ ${provider} Connection Failed\n\n🔗 Service: ${serviceUrl}\n❌ Error: ${status.error}\n💡 Check if ${provider} service is available` }]
+          };
+        }
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Connection test failed: ${error}` }] };
+      }
+
+    case 'semantic_analyze_memory':
+      if (!memoryDb || !jobProcessor) {
+        return { content: [{ type: 'text', text: '❌ Database or job processor not available.' }] };
+      }
+      
+      try {
+        const memoryId = args?.memory_id as number;
+        if (!memoryId) throw new Error('memory_id parameter is required');
+        
+        const memory = await memoryDb.getMemoryById(memoryId);
+        if (!memory) {
+          return { content: [{ type: 'text', text: `❌ Memory with ID ${memoryId} not found.` }] };
+        }
+        
+        const jobId = await memoryDb.createAnalysisJob([memoryId], 'single');
+        await jobProcessor.processJob(jobId);
+        const results = await memoryDb.getAnalysisResults(jobId);
+        const result = results[0];
+        
+        if (!result) {
+          return { content: [{ type: 'text', text: `❌ Analysis failed for memory ${memoryId}` }] };
+        }
+        
+        const conceptsList = result.extracted_concepts.join(', ');
+        const metadataText = Object.entries(result.metadata)
+          .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
+          .join('\n');
+        
+        return {
+          content: [{
+            type: 'text',
+            text: `🧠 Semantic Analysis Result (Memory ${memoryId})\n\n📝 Original: ${memory.topic}\n📂 Category: ${memory.category}\n\n🏷️ Memory Type: ${result.memory_type}\n📊 Confidence: ${(result.confidence * 100).toFixed(1)}%\n💡 Concepts: ${conceptsList}\n\n📋 Metadata:\n${metadataText}\n\n🆔 Job ID: ${jobId}`
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Analysis failed: ${error}` }] };
+      }
+    case 'batch_analyze_memories':
+      if (!memoryDb || !jobProcessor) {
+        return { content: [{ type: 'text', text: '❌ Database or job processor not available.' }] };
+      }
+      
+      try {
+        const memoryIds = args?.memory_ids as number[];
+        const background = args?.background !== false;
+        
+        if (!memoryIds || !Array.isArray(memoryIds) || memoryIds.length === 0) {
+          throw new Error('memory_ids parameter is required and must be a non-empty array');
+        }
+        
+        const jobId = await memoryDb.createAnalysisJob(memoryIds, 'batch');
+        
+        if (background) {
+          jobProcessor.processJob(jobId).catch((error) => {
+            console.error(`Background job ${jobId} failed:`, error);
+          });
+          
+          return {
+            content: [{ type: 'text', text: `🚀 Batch Analysis Started\n\n🆔 Job ID: ${jobId}\n📊 Memories: ${memoryIds.length} queued\n⚡ Mode: Background processing\n📱 Status: Use get_analysis_status("${jobId}") to check progress` }]
+          };
+        } else {
+          await jobProcessor.processJob(jobId);
+          return {
+            content: [{ type: 'text', text: `✅ Batch Analysis Completed\n\n🆔 Job ID: ${jobId}\n📊 Memories: ${memoryIds.length} processed\n📱 Results: Use get_analysis_result("${jobId}") to view results` }]
+          };
+        }
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Batch analysis failed: ${error}` }] };
+      }
+
+    case 'get_analysis_status':
+      if (!memoryDb) {
+        return { content: [{ type: 'text', text: '❌ Database not available.' }] };
+      }
+      
+      try {
+        const jobId = args?.job_id as string;
+        if (!jobId) throw new Error('job_id parameter is required');
+        
+        const job = await memoryDb.getJobStatus(jobId);
+        if (!job) {
+          return { content: [{ type: 'text', text: `❌ Job ${jobId} not found.` }] };
+        }
+        
+        const progress = job.progress_total > 0 ? 
+          `${job.progress_current}/${job.progress_total} (${Math.round(job.progress_current / job.progress_total * 100)}%)` :
+          'Unknown';
+        
+        const statusIcon = ({ 'pending': '⏳', 'running': '🔄', 'completed': '✅', 'failed': '❌' } as any)[job.status] || '❓';
+        
+        let statusText = `📊 Analysis Job Status\n\n🆔 Job ID: ${jobId}\n${statusIcon} Status: ${job.status}\n📈 Progress: ${progress}\n📅 Created: ${job.created_at}`;
+        
+        if (job.started_at) statusText += `\n🚀 Started: ${job.started_at}`;
+        if (job.completed_at) statusText += `\n🏁 Completed: ${job.completed_at}`;
+        if (job.error_message) statusText += `\n❌ Error: ${job.error_message}`;
+        
+        return { content: [{ type: 'text', text: statusText }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Status check failed: ${error}` }] };
+      }
+    case 'get_analysis_result':
+      if (!memoryDb) {
+        return { content: [{ type: 'text', text: '❌ Database not available.' }] };
+      }
+      
+      try {
+        const jobId = args?.job_id as string;
+        if (!jobId) throw new Error('job_id parameter is required');
+        
+        const job = await memoryDb.getJobStatus(jobId);
+        if (!job) {
+          return { content: [{ type: 'text', text: `❌ Job ${jobId} not found.` }] };
+        }
+        
+        if (job.status !== 'completed') {
+          return { content: [{ type: 'text', text: `⏳ Job ${jobId} not yet completed (Status: ${job.status})\n\nUse get_analysis_status to check progress.` }] };
+        }
+        
+        const results = await memoryDb.getAnalysisResults(jobId);
+        if (results.length === 0) {
+          return { content: [{ type: 'text', text: `❌ No results found for job ${jobId}` }] };
+        }
+        
+        const resultText = results.map(result => {
+          const conceptsList = result.extracted_concepts.join(', ');
+          const metadataEntries = Object.entries(result.metadata)
+            .filter(([_, value]) => value && value !== 'null')
+            .map(([key, value]) => `  ${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
+            .join('\n');
+          
+          return `📝 Memory ${result.memory_id}: ${result.topic}\n` +
+                 `   📂 Category: ${result.category}\n` +
+                 `   🏷️ Type: ${result.memory_type} (${(result.confidence * 100).toFixed(1)}%)\n` +
+                 `   💡 Concepts: ${conceptsList}\n` +
+                 (metadataEntries ? `   📋 Metadata:\n${metadataEntries}\n` : '');
+        }).join('\n---\n\n');
+        
+        return {
+          content: [{
+            type: 'text',
+            text: `🧠 Analysis Results (Job ${jobId})\n\n📊 Analyzed: ${results.length} memories\n🏁 Completed: ${job.completed_at}\n\n${resultText}`
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Result retrieval failed: ${error}` }] };
+      }
+
+    case 'extract_and_analyze_concepts':
+      if (!memoryDb || !jobProcessor) {
+        return { content: [{ type: 'text', text: '❌ Database or job processor not available.' }] };
+      }
+      
+      try {
+        const memoryId = args?.memory_id as number;
+        if (!memoryId) throw new Error('memory_id parameter is required');
+        
+        const memory = await memoryDb.getMemoryById(memoryId);
+        if (!memory) {
+          return { content: [{ type: 'text', text: `❌ Memory with ID ${memoryId} not found.` }] };
+        }
+        
+        // Use the new pipeline method
+        const analyzer = new SemanticAnalyzer();
+        const result = await analyzer.extractAndAnalyzeConcepts(memory);
+        
+        if (result.error) {
+          return { content: [{ type: 'text', text: `❌ Pipeline failed: ${result.error}` }] };
+        }
+        
+        if (!result.semantic_concepts || result.semantic_concepts.length === 0) {
+          return { content: [{ type: 'text', text: `❌ No semantic concepts extracted from memory ${memoryId}` }] };
+        }
+        
+        // Format the results beautifully
+        const conceptsText = result.semantic_concepts.map((concept, index) => {
+          const conceptsList = concept.extracted_concepts?.join(', ') || 'None';
+          const metadataEntries = Object.entries(concept.metadata || {})
+            .filter(([_, value]) => value && value !== 'null' && value !== false && !Array.isArray(value) || (Array.isArray(value) && value.length > 0))
+            .map(([key, value]) => `    ${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
+            .join('\n');
+          
+          return `🧩 Concept ${index + 1}: ${concept.concept_title}\n` +
+                 `   📝 Description: ${concept.concept_description}\n` +
+                 `   🏷️ Type: ${concept.memory_type} (${(concept.confidence * 100).toFixed(1)}%)\n` +
+                 `   💡 Concepts: ${conceptsList}\n` +
+                 (metadataEntries ? `   📋 Metadata:\n${metadataEntries}\n` : '');
+        }).join('\n---\n\n');
+        
+        return {
+          content: [{
+            type: 'text',
+            text: `🧠 Complete Semantic Analysis Pipeline (Memory ${memoryId})\n\n` +
+                  `📝 Original: ${memory.topic}\n` +
+                  `📂 Category: ${memory.category}\n\n` +
+                  `🔍 Extracted ${result.semantic_concepts.length} Semantic Concepts:\n\n${conceptsText}`
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Pipeline analysis failed: ${error}` }] };
+      }
+
+    // === EXISTING MEMORY TOOLS ===
+    case 'recall_category':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const category = args?.category as string;
+        const limit = (args?.limit as number) || 50;
+        if (!category) throw new Error('Category parameter is required');
+        
+        const memories = await memoryDb.getMemoriesByCategory(category, limit);
+        if (memories.length === 0) {
+          return { content: [{ type: 'text', text: `📝 Keine Erinnerungen in Kategorie "${category}" gefunden.` }] };
+        }
+        
+        const memoryText = memories.map(memory => `📅 ${memory.date} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
+        return { content: [{ type: 'text', text: `🧠 Erinnerungen aus Kategorie "${category}" (${memories.length} gefunden):\n\n${memoryText}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen: ${error}` }] };
+      }
+
+    case 'save_new_memory':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const category = args?.category as string;
+        const topic = args?.topic as string;
+        const content = args?.content as string;
+        if (!category || !topic || !content) throw new Error('Category, topic and content required');
+        
+        const result = await memoryDb.saveNewMemory(category, topic, content);
+        return {
+          content: [{ type: 'text', text: `✅ Neue Erinnerung gespeichert!\n\n📂 Kategorie: ${category}\n🏷️ Topic: ${topic}\n🆔 ID: ${result.id}\n📅 Datum: ${new Date().toISOString().split('T')[0]}\n\n💾 Erfolgreich in Baby-SkyNet Memory System abgelegt.` }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Speichern: ${error}` }] };
+      }
+
+    case 'search_memories':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const query = args?.query as string;
+        const categories = args?.categories as string[];
+        if (!query) throw new Error('Query parameter is required');
+        
+        const memories = await memoryDb.searchMemories(query, categories);
+        if (memories.length === 0) {
+          return { content: [{ type: 'text', text: `🔍 Keine Erinnerungen für "${query}" gefunden.` }] };
+        }
+        
+        const memoryText = memories.map(memory => `📅 ${memory.date} | 📂 ${memory.category} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
+        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+        return { content: [{ type: 'text', text: `🔍 Suchergebnisse für "${query}"${categoryFilter} (${memories.length} gefunden):\n\n${memoryText}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler bei der Suche: ${error}` }] };
+      }
+    case 'get_recent_memories':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const limit = (args?.limit as number) || 10;
+        const memories = await memoryDb.getRecentMemories(limit);
+        if (memories.length === 0) {
+          return { content: [{ type: 'text', text: '📝 Keine Erinnerungen vorhanden.' }] };
+        }
+        
+        const memoryText = memories.map(memory => `📅 ${memory.date} | 📂 ${memory.category} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
+        return { content: [{ type: 'text', text: `⏰ Letzte ${memories.length} Erinnerungen:\n\n${memoryText}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen: ${error}` }] };
+      }
+
+    case 'list_categories':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const categories = await memoryDb.listCategories();
+        if (categories.length === 0) {
+          return { content: [{ type: 'text', text: '📂 Keine Kategorien vorhanden.' }] };
+        }
+        
+        const categoryText = categories.map(cat => `📂 ${cat.category} (${cat.count} Erinnerungen)`).join('\n');
+        const total = categories.reduce((sum, cat) => sum + cat.count, 0);
+        return { content: [{ type: 'text', text: `📂 Verfügbare Kategorien (${total} Erinnerungen gesamt):\n\n${categoryText}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen: ${error}` }] };
+      }
+
+    case 'update_memory':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const id = args?.id as number;
+        const topic = args?.topic as string;
+        const content = args?.content as string;
+        const category = args?.category as string;
+        if (!id) throw new Error('ID parameter is required');
+        
+        const result = await memoryDb.updateMemory(id, topic, content, category);
+        if (result.changedRows === 0) {
+          return { content: [{ type: 'text', text: `❌ Keine Erinnerung mit ID ${id} gefunden.` }] };
+        }
+        
+        const updates = [];
+        if (topic) updates.push(`Topic: ${topic}`);
+        if (content) updates.push(`Content: ${content.substring(0, 50)}...`);
+        if (category) updates.push(`Category: ${category}`);
+        
+        return { content: [{ type: 'text', text: `✅ Erinnerung ${id} erfolgreich aktualisiert!\n\n📝 Updates:\n${updates.join('\n')}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Aktualisieren: ${error}` }] };
+      }
+    case 'move_memory':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const id = args?.id as number;
+        const newCategory = args?.new_category as string;
+        if (!id || !newCategory) throw new Error('ID and new_category parameters are required');
+        
+        const result = await memoryDb.moveMemory(id, newCategory);
+        return {
+          content: [{ type: 'text', text: `✅ Erinnerung ${id} erfolgreich verschoben!\n\n📋 Status: → "${newCategory}"\n🔄 Operation: Memory-Kategorie geändert` }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Verschieben: ${error}` }] };
+      }
+
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+});
+
+// Server starten
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('🤖 SkyNet Home Edition v2.1 MCP Server running...');
+  console.error('🧠 Memory Management + Multi-Provider Semantic Analysis ready!');
+}
+
+main().catch((error) => {
+  console.error('Server error:', error);
+  process.exit(1);
+});
