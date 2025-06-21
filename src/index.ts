@@ -211,8 +211,9 @@ class SemanticAnalyzer {
   async analyzeMemory(memory: any): Promise<{
     memory_type?: string;
     confidence?: number;
+    mood?: string;
+    keywords?: string[];
     extracted_concepts?: string[];
-    metadata?: any;
     error?: string;
   }> {
     const prompt = this.buildAnalysisPrompt(memory);
@@ -233,16 +234,11 @@ class SemanticAnalyzer {
     return `Analyze this memory entry and classify it semantically. Return ONLY a JSON object with this exact structure:
 
 {
-  "memory_type": "technical|emotional|procedural|factual",
+  "memory_type": "faktenwissen|prozedurales_wissen|erlebnisse|bewusstsein|humor",
   "confidence": 0.85,
-  "extracted_concepts": ["concept1", "concept2", "concept3"],
-  "metadata": {
-    "tools_mentioned": ["tool1", "tool2"],
-    "relates_to_people": ["person1"],
-    "contains_code": false,
-    "learning_type": "debugging|partnership|philosophy|etc",
-    "emotional_tone": "positive|neutral|negative"
-  }
+  "mood": "positive|neutral|negative",
+  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "extracted_concepts": ["concept1", "concept2", "concept3"]
 }
 
 Memory to analyze:
@@ -251,12 +247,13 @@ Topic: ${memory.topic}
 Content: ${memory.content}
 
 Classification guidelines:
-- technical: Programming, debugging, tools, systems
-- emotional: Relationships, feelings, appreciation, trust
-- procedural: Step-by-step processes, methods, workflows  
-- factual: Pure information, facts, definitions
+- faktenwissen: Objektive Informationen, Definitionen, Konzepte (z.B. "Der kategorische Imperativ von Kant besagt...")
+- prozedurales_wissen: How-to's, Workflows, Debugging-Schritte, Methodiken (z.B. "Um Docker zu debuggen: 1. logs prüfen, 2. exec...")
+- erlebnisse: Subjektive Erfahrungen, Dialoge, gemeinsame Aktivitäten (z.B. "heute haben Mike und ich über Kant philosophiert...")
+- bewusstsein: Claude's Reflexionen, Meinungen, Selbstwahrnehmung (z.B. "ich (Claude) finde den kategorischen Imperativ wichtig...")
+- humor: Witze, Running Gags, Humor-Prinzipien, situative Entspannung
 
-Extract 2-4 key concepts that capture the essence of this memory.
+Extract 2-4 key concepts and 3-5 relevant keywords for hybrid search.
 Be concise and precise. Return ONLY the JSON, no explanation.`;
   }  
   private parseAnalysisResponse(response: string): any {
@@ -267,7 +264,7 @@ Be concise and precise. Return ONLY the JSON, no explanation.`;
     
     const parsed = JSON.parse(jsonMatch[0]);
     
-    if (!parsed.memory_type || !parsed.confidence || !parsed.extracted_concepts) {
+    if (!parsed.memory_type || !parsed.confidence || !parsed.extracted_concepts || !parsed.mood || !parsed.keywords) {
       throw new Error('Missing required fields in analysis response');
     }
     
@@ -364,16 +361,11 @@ Return ONLY the JSON array, no explanation.`;
     return `Analyze this semantic concept and classify it. Return ONLY a JSON object with this exact structure:
 
 {
-  "memory_type": "technical|emotional|procedural|factual",
+  "memory_type": "faktenwissen|prozedurales_wissen|erlebnisse|bewusstsein|humor",
   "confidence": 0.85,
-  "extracted_concepts": ["concept1", "concept2"],
-  "metadata": {
-    "tools_mentioned": [],
-    "relates_to_people": [],
-    "contains_code": false,
-    "learning_type": "debugging|partnership|philosophy|etc",
-    "emotional_tone": "positive|neutral|negative"
-  }
+  "mood": "positive|neutral|negative",
+  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "extracted_concepts": ["concept1", "concept2"]
 }
 
 Concept to analyze:
@@ -382,14 +374,14 @@ Description: ${concept.description}
 Original Category: ${originalMemory.category}
 
 Classification guidelines:
-- Be as complete as possible regarding the original content
-- Preserve all information from the concept
-- Answer in German
-- technical: Programming, debugging, tools, systems
-- emotional: Relationships, feelings, appreciation, trust
-- procedural: Step-by-step processes, methods, workflows
-- factual: Pure information, facts, definitions
+- faktenwissen: Objektive Informationen, Definitionen, Konzepte (z.B. "Der kategorische Imperativ von Kant besagt...")
+- prozedurales_wissen: How-to's, Workflows, Debugging-Schritte, Methodiken (z.B. "Um Docker zu debuggen: 1. logs prüfen, 2. exec...")
+- erlebnisse: Subjektive Erfahrungen, Dialoge, gemeinsame Aktivitäten (z.B. "heute haben Mike und ich über Kant philosophiert...")
+- bewusstsein: Claude's Reflexionen, Meinungen, Selbstwahrnehmung (z.B. "ich (Claude) finde den kategorischen Imperativ wichtig...")
+- humor: Witze, Running Gags, Humor-Prinzipien, situative Entspannung
 
+Extract 2-4 concept-specific keywords for hybrid search.
+Be as complete as possible regarding the original content. Answer in German.
 Return ONLY the JSON, no explanation.`;
   }
 
@@ -1190,28 +1182,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `❌ No semantic concepts extracted from memory ${memoryId}` }] };
         }
         
-        // Format the results beautifully
+        // Return both structured JSON and formatted display
+        const jsonOutput = JSON.stringify({
+          success: true,
+          original_memory: {
+            id: memoryId,
+            category: memory.category,
+            topic: memory.topic,
+            content: memory.content,
+            date: memory.date
+          },
+          semantic_concepts: result.semantic_concepts
+        }, null, 2);
+
+        // Format the results for display
         const conceptsText = result.semantic_concepts.map((concept, index) => {
+          const keywordsList = concept.keywords?.join(', ') || 'None';
           const conceptsList = concept.extracted_concepts?.join(', ') || 'None';
-          const metadataEntries = Object.entries(concept.metadata || {})
-            .filter(([_, value]) => value && value !== 'null' && value !== false && !Array.isArray(value) || (Array.isArray(value) && value.length > 0))
-            .map(([key, value]) => `    ${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
-            .join('\n');
           
           return `🧩 Concept ${index + 1}: ${concept.concept_title}\n` +
                  `   📝 Description: ${concept.concept_description}\n` +
                  `   🏷️ Type: ${concept.memory_type} (${(concept.confidence * 100).toFixed(1)}%)\n` +
-                 `   💡 Concepts: ${conceptsList}\n` +
-                 (metadataEntries ? `   📋 Metadata:\n${metadataEntries}\n` : '');
-        }).join('\n---\n\n');
-        
+                 `   😊 Mood: ${concept.mood}\n` +
+                 `   🔑 Keywords: ${keywordsList}\n` +
+                 `   💡 Concepts: ${conceptsList}`;
+        }).join('\n\n---\n\n');
+
         return {
           content: [{
             type: 'text',
             text: `🧠 Complete Semantic Analysis Pipeline (Memory ${memoryId})\n\n` +
                   `📝 Original: ${memory.topic}\n` +
                   `📂 Category: ${memory.category}\n\n` +
-                  `🔍 Extracted ${result.semantic_concepts.length} Semantic Concepts:\n\n${conceptsText}`
+                  `🔍 Extracted ${result.semantic_concepts.length} Semantic Concepts:\n\n${conceptsText}\n\n` +
+                  `📋 Structured JSON Output:\n\n\`\`\`json\n${jsonOutput}\n\`\`\``
           }]
         };
       } catch (error) {
