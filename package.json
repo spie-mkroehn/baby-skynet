@@ -10,16 +10,19 @@
     "dev": "tsc && node build/index.js"
   },
   "dependencies": {
+    "@chroma-core/default-embed": "^0.1.8",
+    "@lancedb/lancedb": "^0.21.0",
     "@modelcontextprotocol/sdk": "^0.4.0",
-    "sqlite3": "^5.1.6",
+    "chromadb": "^3.0.4",
+    "dotenv": "^16.3.1",
     "fs-extra": "^11.2.0",
     "node-fetch": "^3.3.2",
-    "uuid": "^9.0.1",
-    "dotenv": "^16.3.1"
+    "sqlite3": "^5.1.6",
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
     "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.0.0",
     "@types/sqlite3": "^3.1.11",
     "@types/uuid": "^9.0.7",
     "typescript": "^5.0.0"
