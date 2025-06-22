@@ -6,10 +6,12 @@ export class JobProcessor {
   private db: MemoryDatabase;
   private analyzer: SemanticAnalyzer;
   private isProcessing: boolean = false;
+  private llmModel: string;
   
-  constructor(database: MemoryDatabase) {
+  constructor(database: MemoryDatabase, llmModel: string) {
     this.db = database;
-    this.analyzer = new SemanticAnalyzer();
+    this.llmModel = llmModel;
+    this.analyzer = new SemanticAnalyzer(this.llmModel);
   }
 
   async processJob(jobId: string): Promise<void> {

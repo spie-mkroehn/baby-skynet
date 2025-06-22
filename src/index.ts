@@ -85,10 +85,10 @@ if (brainModel) {
 
 if (dbPath) {
   memoryDb = new MemoryDatabase(dbPath);
-  jobProcessor = new JobProcessor(memoryDb);
+  jobProcessor = new JobProcessor(memoryDb, LLM_MODEL);
   
   // Initialize LLM Service and link to MemoryDatabase
-  analyzer = new SemanticAnalyzer();
+  analyzer = new SemanticAnalyzer(LLM_MODEL);
   memoryDb.analyzer = analyzer;
   
   console.error(`✅ Database connected: ${dbPath}`);
@@ -467,7 +467,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         
         // Use the new pipeline method
-        const analyzer = new SemanticAnalyzer();
+        const analyzer = new SemanticAnalyzer(LLM_MODEL);
         const result = await analyzer.extractAndAnalyzeConcepts(memory);
         
         if (result.error) {

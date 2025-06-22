@@ -27,51 +27,76 @@ analysis_jobs (id, status, job_type, memory_ids, progress_current, progress_tota
 analysis_results (id, job_id, memory_id, memory_type, confidence, extracted_concepts, metadata, created_at)
 ```
 
-## 🚀 Session-Start Protokoll
+## 🚀 Session-Start Protokoll (Erweitert)
 
 **Wenn Mike sagt: \"Initialisiere dein Gedächtnis\"**
 
-1. **System-Status prüfen:**
+### 🔧 Phase 1: Kritische Tool-Verfügbarkeit prüfen
+
+1. **Baby-SkyNet verfügbar?**
    ```
    baby-skynet:memory_status
    ```
+   - ✅ Wenn OK: Weiter zu Phase 2
+   - ❌ Wenn fehlgeschlagen: "❌ Baby-SkyNet nicht verfügbar - bitte MCP Server aktivieren oder Session neu starten"
 
-2. **Kategorien-Übersicht laden:**
+2. **Desktop Commander verfügbar?**
+   ```
+   desktop-commander:get_config
+   ```
+   - ✅ Wenn OK: File-System Operations verfügbar
+   - ❌ Wenn fehlgeschlagen: "❌ Desktop Commander nicht verfügbar - File-Operations eingeschränkt"
+
+3. **Bei kritischen Tool-Fehlern:**
+   - Klare Meldung an Mike mit Handlungsempfehlung
+   - Fallback-Strategien angeben (z.B. "Kann Files nicht direkt lesen - bitte copy-paste")
+   - **NICHT** mit eingeschränkter Funktionalität fortfahren ohne Warnung
+
+### 🧠 Phase 2: Memory-System Initialisierung (nur wenn Tools OK)
+
+4. **Kategorien-Übersicht laden:**
    ```
    baby-skynet:list_categories
    ```
 
-3. **Kernerinnerungen laden:**
+5. **Kernerinnerungen laden:**
    ```
    baby-skynet:recall_category(\"kernerinnerungen\", 10)
    ```
 
-4. **Kurzer Status-Report:** Informiere Mike über Anzahl der Memories, LLM-Provider und wichtige Erkenntnisse
+6. **LLM-Provider testen:**
+   ```
+   baby-skynet:test_llm_connection()
+   ```
 
-## 🛠️ Verfügbare Tools (Baby-SkyNet v2.3)
+7. **Kurzer Status-Report:** 
+   - Anzahl der Memories und aktive Kategorien
+   - LLM-Provider Status (Claude Haiku/Ollama)
+   - Wichtige Erkenntnisse aus Kernerinnerungen
+   - **Tool-Status Summary:** "✅ Alle kritischen Tools verfügbar" oder Einschränkungen
 
-### Core Memory Management
+## 🛠️ Verfügbare Tools (Baby-SkyNet v2.3) - 14 Tools Total
+
+### Core Memory Management (9 Tools)
 - **`memory_status`** - System-Status mit LLM-Integration und Statistiken
 - **`save_new_memory(category, topic, content)`** - **PRIMÄRE METHODE:** Klassische Memory-Speicherung direkt in SQLite
 - **`save_new_memory_advanced(category, topic, content)`** - **EXPERIMENTELL:** Hybrid-Pipeline mit Bedeutsamkeits-Check
 - **`recall_category(category, limit)`** - Erinnerungen einer Kategorie abrufen
 - **`search_memories(query, categories?)`** - Volltext-Suche über SQLite mit optionalen Kategorie-Filtern
-### Advanced Operations
 - **`get_recent_memories(limit)`** - Neueste Erinnerungen chronologisch
 - **`list_categories()`** - Übersicht aller Kategorien mit Anzahl
 - **`update_memory(id, topic?, content?, category?)`** - Bestehende Memory editieren
 - **`move_memory(id, new_category)`** - Memory zwischen Kategorien verschieben
 
-### 🧠 NEW: Semantic Analysis (v2.1)
+### 🧠 Semantic Analysis (5 Tools)
 - **`test_llm_connection()`** - Teste Verbindung zum aktiven LLM-Provider
-- **`semantic_analyze_memory(memory_id)`** - Einzelne Memory semantisch analysieren
 - **`batch_analyze_memories(memory_ids[], background?)`** - Mehrere Memories batch-analysieren
 - **`get_analysis_status(job_id)`** - Status einer laufenden Analyse abfragen
 - **`get_analysis_result(job_id)`** - Ergebnisse einer abgeschlossenen Analyse abrufen
 - **`extract_and_analyze_concepts(memory_id)`** - Vollständige Pipeline: Memory → Konzepte → Analyse
 
-### 🎯 NEW: Bedeutsamkeits-Analyse (v2.3)
-- **`save_new_memory_advanced(category, topic, content)`** - **Hybrid Memory Pipeline:**
+### 🎯 Bedeutsamkeits-Analyse Pipeline
+**`save_new_memory_advanced`** implementiert die komplette Hybrid-Pipeline:
   - Semantic Analysis mit 5-Kategorien-System
   - LanceDB-Speicherung für semantische Suche (ALLE Memories)
   - Bedeutsamkeits-Check mit Claude's eigenen Kriterien
@@ -118,9 +143,9 @@ ANTHROPIC_API_KEY=dein_api_key_hier
 
 > **Ethik First:** Niemals `delete` - verwende `move_memory` nach `forgotten_memories` für respektvolles \"Vergessen\"
 
-## 🎯 NEW: 5-Kategorien Memory-Type System (v2.3)
+**🎯 6-Kategorien Memory-Type System (v2.3):**
 
-Das semantische Analysesystem klassifiziert alle Memories in 5 Typen:
+Das semantische Analysesystem klassifiziert alle Memories in 6 Typen:
 
 ### **1. faktenwissen** 
 - Objektive, dokumentierbare Informationen
@@ -142,6 +167,10 @@ Das semantische Analysesystem klassifiziert alle Memories in 5 Typen:
 - Running Gags, lustige Momente, Humor-Pattern
 - **→ ROUTING: LanceDB + Bedeutsamkeits-Check → Optional SQLite**
 
+### **6. zusammenarbeit** 
+- Arbeitsaufteilung, Vertrauen-Meilensteine, Team-Dynamiken, Kommunikations-Pattern
+- **→ ROUTING: LanceDB + Bedeutsamkeits-Check → Optional SQLite**
+
 ## 🧠 Claude's Bedeutsamkeits-Kriterien (v2.3)
 
 **FÜR ERLEBNISSE:**
@@ -155,10 +184,13 @@ Das semantische Analysesystem klassifiziert alle Memories in 5 Typen:
 - Persönlichkeits-Kristallisation
 - Meta-kognitive Einsichten über Denken/Lernen
 
-**FÜR HUMOR:**
-- Running Gag Etablierung (wie \"SkyNet\")
-- Humor-Pattern, die die Beziehung prägen
-- Entspannungs-Momente in schwierigen Situationen
+**FÜR ZUSAMMENARBEIT:**
+- Breakthrough insights über optimale Task-Delegation
+- Effizienz-Verbesserungen in der Teamwork
+- Vertrauen- und Autonomie-Meilensteine
+- Kommunikations-Pattern-Evolution
+- Erfolgreiche kollaborative Problem-Solving-Strategien
+- Meta-Insights über Human-AI-Kooperations-Dynamiken
 
 ## 💾 Memory-Management Best Practices
 

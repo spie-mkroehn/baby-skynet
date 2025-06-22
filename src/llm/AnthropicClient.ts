@@ -1,16 +1,14 @@
 import fetch from 'node-fetch';
 
-// Konstanten - später aus index.ts importieren  
-const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
-let LLM_MODEL = 'llama3.1:latest'; // Default
-
 // Anthropic API Client
 export class AnthropicClient {
   private baseUrl: string;
+  private llmModel: string;
   private apiKey: string;
   
-  constructor(baseUrl: string = ANTHROPIC_BASE_URL, apiKey?: string) {
+  constructor(baseUrl: string, llmModel: string, apiKey?: string) {
     this.baseUrl = baseUrl;
+    this.llmModel = llmModel;
     this.apiKey = apiKey || process.env.ANTHROPIC_API_KEY || '';
   }
   
@@ -28,7 +26,7 @@ export class AnthropicClient {
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: LLM_MODEL,
+          model: this.llmModel,
           max_tokens: 10,
           messages: [{ role: 'user', content: 'Test' }]
         })
@@ -39,10 +37,10 @@ export class AnthropicClient {
       } else if (response.status === 400) {
         const data = await response.json() as any;
         if (data.error?.message?.includes('model')) {
-          return { status: 'model_missing', model: LLM_MODEL };
+          return { status: 'model_missing', model: this.llmModel };
         }
       } else if (response.ok) {
-        return { status: 'ready', model: LLM_MODEL };
+        return { status: 'ready', model: this.llmModel };
       }
       
       return { status: 'error', error: `HTTP ${response.status}` };
@@ -65,7 +63,7 @@ export class AnthropicClient {
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: LLM_MODEL,
+          model: this.llmModel,
           max_tokens: 4000,
           temperature: 0.1,
           messages: [{ role: 'user', content: prompt }]

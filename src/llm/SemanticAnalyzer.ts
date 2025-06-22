@@ -1,19 +1,34 @@
 import { OllamaClient } from './OllamaClient.js';
 import { AnthropicClient } from './AnthropicClient.js';
 
-// Konstanten - später aus index.ts importieren
-let LLM_MODEL = 'llama3.1:latest'; // Default
+const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
+const OLLAMA_BASE_URL = 'http://localhost:11434';
 
 // Semantic Analysis Engine
 export class SemanticAnalyzer {
   private ollama: OllamaClient;
   private anthropic: AnthropicClient;
+  private llmModel: string;
   private isAnthropic: boolean;
   
-  constructor() {
-    this.ollama = new OllamaClient();
-    this.anthropic = new AnthropicClient();
-    this.isAnthropic = LLM_MODEL.startsWith('claude-');
+  constructor(llmModel: string) {
+    // Umfassende Parameter-Validierung
+    if (llmModel === undefined || llmModel === null) {
+      throw new Error('llmModel parameter is required (received undefined/null)');
+    }
+    
+    if (typeof llmModel !== 'string') {
+      throw new Error(`llmModel must be a string (received ${typeof llmModel})`);
+    }
+    
+    if (llmModel.trim() === '') {
+      throw new Error('llmModel cannot be empty string');
+    }
+  
+    this.llmModel = llmModel;
+    this.isAnthropic = this.llmModel.startsWith('claude-');
+    this.ollama = new OllamaClient(OLLAMA_BASE_URL, this.llmModel);
+    this.anthropic = new AnthropicClient(ANTHROPIC_BASE_URL, this.llmModel);
   }
   
   async testConnection() {

@@ -1,15 +1,14 @@
 import fetch from 'node-fetch';
 
-// Konstanten - später aus index.ts importieren
-const OLLAMA_BASE_URL = 'http://localhost:11434';
-let LLM_MODEL = 'llama3.1:latest'; // Default
 
 // Ollama Local LLM Client
 export class OllamaClient {
   private baseUrl: string;
+  private llmModel: string;
   
-  constructor(baseUrl: string = OLLAMA_BASE_URL) {
+  constructor(baseUrl: string, llmModel: string) {
     this.baseUrl = baseUrl;
+    this.llmModel = llmModel;
   }
   
   async testConnection(): Promise<{ status: string; model?: string; error?: string }> {
@@ -19,10 +18,10 @@ export class OllamaClient {
         return { status: 'error', error: `HTTP ${response.status}` };
       }
       const data = await response.json() as any;
-      const hasModel = data.models?.some((m: any) => m.name === LLM_MODEL);
+      const hasModel = data.models?.some((m: any) => m.name === this.llmModel);
       return { 
         status: hasModel ? 'ready' : 'model_missing', 
-        model: LLM_MODEL 
+        model: this.llmModel 
       };
     } catch (error) {
       return { status: 'error', error: String(error) };
@@ -35,7 +34,7 @@ export class OllamaClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: LLM_MODEL,
+          model: this.llmModel,
           prompt: prompt,
           stream: false,
           options: { temperature: 0.1, top_p: 0.9 }
