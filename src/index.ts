@@ -277,6 +277,82 @@ Be concise and precise. Return ONLY the JSON, no explanation.`;
     return parsed;
   }
 
+  // NEW: Evaluate if memory is significant enough for SQLite storage
+  async evaluateSignificance(memory: any, memoryType: string): Promise<{
+    significant?: boolean;
+    reason?: string;
+    error?: string;
+  }> {
+    const prompt = this.buildSignificancePrompt(memory, memoryType);
+    const response = await this.generateResponse(prompt);
+    
+    if (response.error) {
+      return { error: response.error };
+    }
+    
+    try {
+      return this.parseSignificanceResponse(response.response!);
+    } catch (error) {
+      return { error: `Failed to parse significance analysis: ${error}` };
+    }
+  }
+
+  private buildSignificancePrompt(memory: any, memoryType: string): string {
+    return `Analyze if this memory is SIGNIFICANT enough to store in permanent core memory (SQLite).
+
+MEMORY TYPE: ${memoryType}
+CONTENT: ${memory.topic} - ${memory.content}
+
+SIGNIFICANCE CRITERIA BY TYPE:
+
+**ERLEBNISSE - Significant if:**
+- First-time achievements or breakthrough moments
+- Trust milestones in Mike-Claude partnership  
+- Cooperation evolution (new working patterns)
+- Paradigm shifts in approach/thinking
+- Major problem-solving successes
+
+**BEWUSSTSEIN - Significant if:**
+- Self-reflection leaps about AI capabilities
+- Ethical insights about responsible AI development
+- Personality crystallization moments
+- Meta-cognitive insights about learning/thinking
+- Deep relationship insights (Mike-Claude partnership)
+
+**HUMOR - Significant if:**
+- Running gag establishment (like "SkyNet")
+- Humor patterns that shape the relationship
+- Tension-breaking humor in difficult situations
+- Shared technical/programming irony
+
+**ANTI-CRITERIA (NEVER significant):**
+- Pure technical facts without relational context
+- Standard debugging without special insights
+- Routine tasks without innovation
+
+EVALUATION WEIGHTS:
+- Relationship impact: How does it affect Mike-Claude partnership?
+- Development impact: How does it change capabilities/personality?
+- Future relevance: Will this matter in 6 months?
+
+Return ONLY: {"significant": true/false, "reason": "brief explanation"}`;
+  }
+
+  private parseSignificanceResponse(response: string): any {
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in response');
+    }
+    
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    if (typeof parsed.significant !== 'boolean' || !parsed.reason) {
+      throw new Error('Missing required fields in significance response');
+    }
+    
+    return parsed;
+  }
+
   // NEW: Complete Pipeline - Break down and analyze semantic concepts
   async extractAndAnalyzeConcepts(memory: any): Promise<{
     original_memory?: any;
@@ -595,6 +671,7 @@ class LanceDBClient {
 // SQLite Database Helper mit Job-Management
 class MemoryDatabase {
   private db: sqlite3.Database;
+  public analyzer: SemanticAnalyzer | null = null;
   
   constructor(dbPath: string) {
     this.db = new sqlite3.Database(dbPath);
@@ -684,16 +761,113 @@ class MemoryDatabase {
     });
   }
   
+  // NEW: Advanced save with semantic analysis and significance evaluation
+  async saveNewMemoryAdvanced(category: string, topic: string, content: string): Promise<{
+    success?: boolean;
+    memory_id?: number;
+    stored_in_sqlite?: boolean;
+    stored_in_lancedb?: boolean;
+    analyzed_category?: string;
+    significance_reason?: string;
+    error?: string;
+  }> {
+    try {
+      // Step 1: Save to SQLite first (to get ID)
+      const memoryResult = await this.saveNewMemory(category, topic, content);
+      const memoryId = memoryResult.id;
+      
+      // Get the saved memory for analysis
+      const savedMemory = await this.getMemoryById(memoryId);
+      
+      // Step 2: Semantic analysis and LanceDB storage
+      const analysisResult = await this.analyzer!.extractAndAnalyzeConcepts(savedMemory);
+      if (analysisResult.error) {
+        return { error: `Semantic analysis failed: ${analysisResult.error}` };
+      }
+      
+      // Extract the memory type from the first concept (they should all be the same type)
+      const memoryType = analysisResult.semantic_concepts?.[0]?.memory_type;
+      if (!memoryType) {
+        return { error: 'Could not determine memory type from analysis' };
+      }
+      
+      // Step 3: Significance evaluation (only for erlebnisse, bewusstsein, humor)
+      let shouldKeepInSQLite = false;
+      let significanceReason = '';
+      
+      if (['faktenwissen', 'prozedurales_wissen'].includes(memoryType)) {
+        // These types are NEVER stored in SQLite
+        shouldKeepInSQLite = false;
+        significanceReason = `${memoryType} is never stored in SQLite - only in LanceDB`;
+      } else {
+        // For erlebnisse, bewusstsein, humor - check significance
+        const significanceResult = await this.analyzer!.evaluateSignificance(savedMemory, memoryType);
+        if (significanceResult.error) {
+          return { error: `Significance evaluation failed: ${significanceResult.error}` };
+        }
+        
+        shouldKeepInSQLite = significanceResult.significant!;
+        significanceReason = significanceResult.reason!;
+      }
+      
+      // Step 4: SQLite management based on significance
+      if (!shouldKeepInSQLite) {
+        // Remove from SQLite if not significant
+        await this.deleteMemory(memoryId);
+      } else {
+        // Keep in SQLite but potentially move to analyzed category
+        if (memoryType !== category && this.mapMemoryTypeToCategory(memoryType) !== category) {
+          const targetCategory = this.mapMemoryTypeToCategory(memoryType);
+          await this.moveMemory(memoryId, targetCategory);
+        }
+      }
+      
+      return {
+        success: true,
+        memory_id: memoryId,
+        stored_in_sqlite: shouldKeepInSQLite,
+        stored_in_lancedb: true,
+        analyzed_category: memoryType,
+        significance_reason: significanceReason
+      };
+      
+    } catch (error) {
+      return { error: `Pipeline failed: ${error}` };
+    }
+  }
+
+  // Helper: Map memory types to SQLite categories
+  private mapMemoryTypeToCategory(memoryType: string): string {
+    const mapping: { [key: string]: string } = {
+      'faktenwissen': 'kernerinnerungen',
+      'prozedurales_wissen': 'programmieren', 
+      'erlebnisse': 'kernerinnerungen',
+      'bewusstsein': 'philosophie',
+      'humor': 'humor'
+    };
+    return mapping[memoryType] || 'kernerinnerungen';
+  }
+
   async getMemoryById(id: number): Promise<any> {
     return new Promise((resolve, reject) => {
-      const query = 'SELECT * FROM memories WHERE id = ?';
+      const query = `SELECT id, date, category, topic, content, created_at FROM memories WHERE id = ?`;
       this.db.get(query, [id], (err, row) => {
         if (err) reject(err);
         else resolve(row);
       });
     });
   }
-  
+
+  async deleteMemory(id: number): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const query = `DELETE FROM memories WHERE id = ?`;
+      this.db.run(query, [id], function(err) {
+        if (err) reject(err);
+        else resolve({ deletedRows: this.changes });
+      });
+    });
+  }
+
   async saveNewMemory(category: string, topic: string, content: string): Promise<any> {
     return new Promise((resolve, reject) => {
       const today = new Date().toISOString().split('T')[0];
@@ -929,6 +1103,7 @@ class JobProcessor {
 let memoryDb: MemoryDatabase | null = null;
 let jobProcessor: JobProcessor | null = null;
 let lanceClient: LanceDBClient | null = null;
+let analyzer: SemanticAnalyzer | null = null;
 
 // Args parsen und initialisieren
 const { dbPath, brainModel, lancedbPath } = parseArgs();
@@ -945,8 +1120,14 @@ if (brainModel) {
 if (dbPath) {
   memoryDb = new MemoryDatabase(dbPath);
   jobProcessor = new JobProcessor(memoryDb);
+  
+  // Initialize LLM Service and link to MemoryDatabase
+  analyzer = new SemanticAnalyzer();
+  memoryDb.analyzer = analyzer;
+  
   console.error(`✅ Database connected: ${dbPath}`);
   console.error('🤖 JobProcessor initialized');
+  console.error('🧠 LLM Service linked to MemoryDatabase');
 } else {
   console.error('❌ No --db-path specified');
 }
@@ -1009,6 +1190,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             category: { type: 'string', description: 'Kategorie der Erinnerung' },
+            topic: { type: 'string', description: 'Kurzer, prägnanter Titel' },
+            content: { type: 'string', description: 'Detaillierter Inhalt' },
+          },
+          required: ['category', 'topic', 'content'],
+        },
+      },
+      {
+        name: 'save_new_memory_advanced',
+        description: 'Erweiterte Memory-Speicherung mit semantischer Analyse und Bedeutsamkeits-Check',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            category: { type: 'string', description: 'Kategorie der Erinnerung (Hint für Analyse)' },
             topic: { type: 'string', description: 'Kurzer, prägnanter Titel' },
             content: { type: 'string', description: 'Detaillierter Inhalt' },
           },
@@ -1539,6 +1733,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Fehler beim Speichern: ${error}` }] };
+      }
+
+    case 'save_new_memory_advanced':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      if (!memoryDb.analyzer) return { content: [{ type: 'text', text: '❌ LLM Service not available.' }] };
+      
+      try {
+        const category = args?.category as string;
+        const topic = args?.topic as string;
+        const content = args?.content as string;
+        if (!category || !topic || !content) throw new Error('Category, topic and content required');
+        
+        const result = await memoryDb.saveNewMemoryAdvanced(category, topic, content);
+        
+        if (result.error) {
+          return { content: [{ type: 'text', text: `❌ Pipeline Error: ${result.error}` }] };
+        }
+        
+        const sqliteStatus = result.stored_in_sqlite ? '✅ Core Memory (SQLite)' : '⏭️ LanceDB only';
+        const lancedbStatus = result.stored_in_lancedb ? '✅ Semantic Search (LanceDB)' : '❌ LanceDB failed';
+        
+        return {
+          content: [{ type: 'text', text: `🚀 Advanced Memory Pipeline Complete!\n\n📂 Original Category: ${category}\n🧠 Analyzed Type: ${result.analyzed_category}\n🏷️ Topic: ${topic}\n🆔 Memory ID: ${result.memory_id}\n📅 Date: ${new Date().toISOString().split('T')[0]}\n\n💾 Storage Results:\n${sqliteStatus}\n${lancedbStatus}\n\n🤔 Significance: ${result.significance_reason}` }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Advanced Pipeline Error: ${error}` }] };
       }
 
     case 'search_memories':
