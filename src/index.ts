@@ -590,9 +590,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         const sqliteStatus = result.stored_in_sqlite ? '✅ Core Memory (SQLite)' : '⏭️ LanceDB only';
         const lancedbStatus = result.stored_in_lancedb ? '✅ Semantic Search (LanceDB)' : '❌ LanceDB failed';
+        const shortMemoryStatus = result.stored_in_short_memory ? '✅ Short Memory (FIFO Queue)' : '❌ Short Memory failed';
         
         return {
-          content: [{ type: 'text', text: `🚀 Advanced Memory Pipeline Complete!\n\n📂 Original Category: ${category}\n🧠 Analyzed Type: ${result.analyzed_category}\n🏷️ Topic: ${topic}\n🆔 Memory ID: ${result.memory_id}\n📅 Date: ${new Date().toISOString().split('T')[0]}\n\n💾 Storage Results:\n${sqliteStatus}\n${lancedbStatus}\n\n🤔 Significance: ${result.significance_reason}` }]
+          content: [{ type: 'text', text: `🚀 Advanced Memory Pipeline Complete!\n\n📂 Original Category: ${category}\n🧠 Analyzed Type: ${result.analyzed_category}\n🏷️ Topic: ${topic}\n🆔 Memory ID: ${result.memory_id}\n📅 Date: ${new Date().toISOString().split('T')[0]}\n\n💾 Storage Results:\n${sqliteStatus}\n${lancedbStatus}\n${shortMemoryStatus}\n\n🤔 Significance: ${result.significance_reason}` }]
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Advanced Pipeline Error: ${error}` }] };

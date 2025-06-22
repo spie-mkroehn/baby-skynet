@@ -1,5 +1,6 @@
 import sqlite3 from 'sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import { ShortMemoryManager } from './ShortMemoryManager.js';
 
 // Forward declaration - SemanticAnalyzer wird später importiert
 interface SemanticAnalyzer {
@@ -10,10 +11,12 @@ interface SemanticAnalyzer {
 // SQLite Database Helper mit Job-Management
 export class MemoryDatabase {
   private db: sqlite3.Database;
+  private shortMemoryManager: ShortMemoryManager;
   public analyzer: SemanticAnalyzer | null = null;
   
   constructor(dbPath: string) {
     this.db = new sqlite3.Database(dbPath);
+    this.shortMemoryManager = new ShortMemoryManager(this.db);
     this.initializeDatabase();
   }
   
@@ -135,6 +138,7 @@ export class MemoryDatabase {
     memory_id?: number;
     stored_in_sqlite?: boolean;
     stored_in_lancedb?: boolean;
+    stored_in_short_memory?: boolean;
     analyzed_category?: string;
     significance_reason?: string;
     error?: string;
@@ -190,11 +194,21 @@ export class MemoryDatabase {
         }
       }
       
+      // Step 5: Short Memory (only if NOT stored as Core Memory)
+      if (!shouldKeepInSQLite) {
+        await this.addToShortMemory({
+          topic: topic,
+          content: content,
+          date: new Date().toISOString().split('T')[0]
+        });
+      }
+      
       return {
         success: true,
         memory_id: memoryId,
         stored_in_sqlite: shouldKeepInSQLite,
         stored_in_lancedb: true,
+        stored_in_short_memory: !shouldKeepInSQLite,
         analyzed_category: memoryType,
         significance_reason: significanceReason
       };
@@ -370,6 +384,31 @@ export class MemoryDatabase {
         }
       });
     });
+  }
+  
+  // Short Memory Management Methods
+  async addToShortMemory(memory: any): Promise<void> {
+    return this.shortMemoryManager.addToShortMemory(memory);
+  }
+  
+  async getShortMemories(limit?: number): Promise<any[]> {
+    return this.shortMemoryManager.getShortMemories(limit);
+  }
+  
+  async getShortMemoryCount(): Promise<number> {
+    return this.shortMemoryManager.getShortMemoryCount();
+  }
+  
+  async clearShortMemory(): Promise<void> {
+    return this.shortMemoryManager.clearShortMemory();
+  }
+  
+  setMaxShortMemories(max: number): void {
+    this.shortMemoryManager.setMaxShortMemories(max);
+  }
+  
+  getShortMemoryConfig(): { maxShortMemories: number } {
+    return this.shortMemoryManager.getConfig();
   }
   
   close() {
