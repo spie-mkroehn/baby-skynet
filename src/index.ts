@@ -13,31 +13,28 @@ import { MemoryDatabase } from './database/MemoryDatabase.js';
 import { SemanticAnalyzer } from './llm/SemanticAnalyzer.js';
 import { JobProcessor } from './jobs/JobProcessor.js';
 import { LanceDBClient } from './vectordb/LanceDBClient.js';
-import sqlite3 from 'sqlite3';
-import { promisify } from 'util';
-import fetch from 'node-fetch';
-import { v4 as uuidv4 } from 'uuid';
-import { connect } from '@lancedb/lancedb';
+
 
 /**
- * SkyNet Home Edition MCP Server v2.3
+ * Baby SkyNet MCP Server v2.3
  * Memory Management + Multi-Provider Semantic Analysis (Ollama + Anthropic)
  */
 
 // Load environment variables with explicit path (ES Module compatible)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const __baby_skynet_version = 2.3
 const envPath = path.join(__dirname, '../.env');
 dotenv.config({ path: envPath });
-
-// Debug: Check if API key is loaded
-console.error(`🔑 Debug - .env path: ${envPath}`);
-console.error(`🔑 Debug - ANTHROPIC_API_KEY loaded: ${process.env.ANTHROPIC_API_KEY ? 'Yes' : 'No'}`);
 
 // LLM Configuration
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
 let LLM_MODEL = 'llama3.1:latest'; // Default, wird von Args überschrieben
+
+// Debug: Check if API key is loaded
+console.error(`🔑 Debug - .env path: ${envPath}`);
+console.error(`🔑 Debug - ANTHROPIC_API_KEY loaded: ${process.env.ANTHROPIC_API_KEY ? 'Yes' : 'No'}`);
 
 // Kommandozeilen-Parameter parsen
 function parseArgs(): { dbPath?: string; brainModel?: string; lancedbPath?: string } {
@@ -61,20 +58,21 @@ function parseArgs(): { dbPath?: string; brainModel?: string; lancedbPath?: stri
     }
   }
   
+  // Debug
   console.error(`🔍 Debug - Parsed dbPath: ${result.dbPath}`);
   console.error(`🔍 Debug - Parsed brainModel: ${result.brainModel}`);
   console.error(`🔍 Debug - Parsed lancedbPath: ${result.lancedbPath}`);
   return result;
 }
 
+// Args parsen und initialisieren
+const { dbPath, brainModel, lancedbPath } = parseArgs();
+
 // Global instances
 let memoryDb: MemoryDatabase | null = null;
 let jobProcessor: JobProcessor | null = null;
 let lanceClient: LanceDBClient | null = null;
 let analyzer: SemanticAnalyzer | null = null;
-
-// Args parsen und initialisieren
-const { dbPath, brainModel, lancedbPath } = parseArgs();
 
 // LLM Model und Provider konfigurieren
 if (brainModel) {
@@ -124,17 +122,7 @@ const server = new Server({
 
 // Tools definieren
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'hello_skynet',
-        description: 'Ein einfacher Gruß vom SkyNet Home Edition System',
-        inputSchema: {
-          type: 'object',
-          properties: { message: { type: 'string', description: 'Nachricht an SkyNet' } },
-          required: ['message'],
-        },
-      },
+  const tools = [
       {
         name: 'memory_status',
         description: 'Status des Memory Systems anzeigen',
@@ -234,18 +222,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: { type: 'object', properties: {} },
       },
       {
-        name: 'semantic_analyze_memory',
-        description: 'Analysiere eine einzelne Memory semantisch mit Ollama',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            memory_id: { type: 'number', description: 'ID der zu analysierenden Memory' },
-            timeout_ms: { type: 'number', description: 'Timeout in ms', default: 30000 },
-          },
-          required: ['memory_id'],
-        },
-      },
-      {
         name: 'batch_analyze_memories',
         description: 'Starte asynchrone Batch-Analyse mehrerer Memories',
         inputSchema: {
@@ -287,30 +263,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['memory_id'],
         },
       },
-      {
-        name: 'debug_lancedb_status',
-        description: 'Debug LanceDB-Status und Parameter zur Laufzeit',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-      },
-    ],
-  };
+    ];
+  
+  return { tools };
 });
+
 // Tool-Aufrufe verarbeiten
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   switch (name) {
-    case 'hello_skynet':
-      return {
-        content: [{
-          type: 'text',
-          text: `🤖 SkyNet Home Edition v2.1 grüßt zurück: "${args?.message || 'Keine Nachricht'}"\n\nSystem Status: Online\nMemory Core: Active\nOllama Integration: Ready\nAI Partnership: Strong`,
-        }],
-      };
-
     case 'memory_status':
       const dbStatus = memoryDb ? '✅ Connected' : '❌ Not Connected';
       
@@ -318,7 +280,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `📊 SkyNet Home Edition v2.1 - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 Ollama Integration: Waiting for DB\n🔗 MCP Protocol: v2.1.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Brain 2.1 Tools: Limited (DB required)`,
+            text: `📊 SkyNet Home Edition v2.3 - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 LLM Integration: Waiting for DB\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available`,
           }],
         };
       }
@@ -336,14 +298,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `📊 SkyNet Home Edition v2.1 - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.1.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Brain 2.1 Tools: test_llm_connection, semantic_analyze_memory, batch_analyze_memories, get_analysis_status, get_analysis_result + all v2.0 tools\n\n💫 Standard Categories: kernerinnerungen, programmieren, projekte, debugging, humor, philosophie, anstehende_aufgaben, erledigte_aufgaben, forgotten_memories`,
+            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: kernerinnerungen, programmieren, projekte, debugging, humor, philosophie, anstehende_aufgaben, erledigte_aufgaben, forgotten_memories`,
           }],
         };
       } catch (error) {
         return {
           content: [{
             type: 'text',
-            text: `📊 SkyNet Home Edition v2.1 - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 Ollama Integration: Unknown\n🔗 MCP Protocol: v2.1.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Brain 2.1 Tools: Available`,
+            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available`,
           }],
         };
       }
@@ -380,43 +342,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Connection test failed: ${error}` }] };
       }
 
-    case 'semantic_analyze_memory':
-      if (!memoryDb || !jobProcessor) {
-        return { content: [{ type: 'text', text: '❌ Database or job processor not available.' }] };
-      }
-      
-      try {
-        const memoryId = args?.memory_id as number;
-        if (!memoryId) throw new Error('memory_id parameter is required');
-        
-        const memory = await memoryDb.getMemoryById(memoryId);
-        if (!memory) {
-          return { content: [{ type: 'text', text: `❌ Memory with ID ${memoryId} not found.` }] };
-        }
-        
-        const jobId = await memoryDb.createAnalysisJob([memoryId], 'single');
-        await jobProcessor.processJob(jobId);
-        const results = await memoryDb.getAnalysisResults(jobId);
-        const result = results[0];
-        
-        if (!result) {
-          return { content: [{ type: 'text', text: `❌ Analysis failed for memory ${memoryId}` }] };
-        }
-        
-        const conceptsList = result.extracted_concepts.join(', ');
-        const metadataText = Object.entries(result.metadata)
-          .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
-          .join('\n');
-        
-        return {
-          content: [{
-            type: 'text',
-            text: `🧠 Semantic Analysis Result (Memory ${memoryId})\n\n📝 Original: ${memory.topic}\n📂 Category: ${memory.category}\n\n🏷️ Memory Type: ${result.memory_type}\n📊 Confidence: ${(result.confidence * 100).toFixed(1)}%\n💡 Concepts: ${conceptsList}\n\n📋 Metadata:\n${metadataText}\n\n🆔 Job ID: ${jobId}`
-          }]
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Analysis failed: ${error}` }] };
-      }
     case 'batch_analyze_memories':
       if (!memoryDb || !jobProcessor) {
         return { content: [{ type: 'text', text: '❌ Database or job processor not available.' }] };
@@ -608,62 +533,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Pipeline analysis failed: ${error}` }] };
-      }
-
-    case 'debug_lancedb_status':
-      try {
-        // Debug-Informationen sammeln
-        const debugInfo = {
-          argumentsParsed: {
-            lancedbPath: lancedbPath || 'undefined'
-          },
-          runtimeStatus: {
-            lanceClientExists: lanceClient !== null,
-            lanceClientType: lanceClient ? typeof lanceClient : 'null'
-          },
-          processArgs: process.argv.slice(2)
-        };
-
-        let lanceCollectionInfo = 'Not initialized';
-        if (lanceClient) {
-          try {
-            lanceCollectionInfo = await lanceClient.getCollectionInfo();
-          } catch (error) {
-            lanceCollectionInfo = `Error: ${error}`;
-          }
-        }
-
-        // Teste LanceDB-Initialisierung manuell
-        let manualInitTest = 'Not attempted';
-        if (lancedbPath && !lanceClient) {
-          try {
-            const testClient = new LanceDBClient(lancedbPath);
-            await testClient.initialize();
-            manualInitTest = 'SUCCESS - Manual init worked!';
-          } catch (error) {
-            manualInitTest = `FAILED: ${error}`;
-          }
-        }
-
-        return {
-          content: [{
-            type: 'text',
-            text: `🔍 LanceDB Debug Status\n\n` +
-                  `📋 Arguments Parsed:\n` +
-                  `   lancedbPath: ${debugInfo.argumentsParsed.lancedbPath}\n\n` +
-                  `🔧 Runtime Status:\n` +
-                  `   lanceClient exists: ${debugInfo.runtimeStatus.lanceClientExists}\n` +
-                  `   lanceClient type: ${debugInfo.runtimeStatus.lanceClientType}\n\n` +
-                  `📊 Collection Info:\n` +
-                  `   ${JSON.stringify(lanceCollectionInfo, null, 2)}\n\n` +
-                  `🧪 Manual Init Test:\n` +
-                  `   ${manualInitTest}\n\n` +
-                  `⚙️ Process Args:\n` +
-                  `   ${JSON.stringify(debugInfo.processArgs, null, 2)}`
-          }]
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Debug failed: ${error}` }] };
       }
 
     // === EXISTING MEMORY TOOLS ===
