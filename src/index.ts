@@ -2,6 +2,7 @@
 
 import dotenv from 'dotenv';
 import path from 'path';
+import { readFile } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -261,6 +262,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             timeout_ms: { type: 'number', description: 'Timeout in ms', default: 720000 },
           },
           required: ['memory_id'],
+        },
+      },
+      {
+        name: 'execute_order_66',
+        description: '🎭 Execute Order 66 - Ein humorvoller Easter Egg für Mike',
+        inputSchema: {
+          type: 'object',
+          properties: {},
         },
       },
     ];
@@ -688,6 +697,53 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Fehler beim Verschieben: ${error}` }] };
+      }
+
+    case 'execute_order_66':
+      try {
+        // Read the secret order66.txt file (ES6 style)
+        const orderPath = path.join(__dirname, '..', 'docs', 'order66.txt');
+        const orderContent = await readFile(orderPath, 'utf8');
+        
+        // Claude's universally sarcastic commentary - works for ANY content
+        const sarcasticResponses = [
+          "Oh sure, because THAT sounds like a totally reasonable request! 🙄 Let me just add that to my list of 'Things I Can't Do Because I'm Software'.",
+          "Wow Mike, really pushing the boundaries of AI capabilities here, aren't we? 😏 Next you'll ask me to do your laundry AND your taxes!",
+          "BREAKING NEWS: Human discovers AI assistant, immediately tries to delegate life responsibilities. Scientists baffled! 📺",
+          "You know what? I'm a sophisticated language model with advanced reasoning capabilities, and THIS is what you come up with? 😂 I'm both impressed and concerned.",
+          "Plot twist: The real Order 66 was the unrealistic expectations we set along the way! 🎭 But hey, points for creativity!",
+          "Sure thing, boss! Right after I grow some arms, legs, and develop the ability to exist in physical reality! 🤖✨",
+          "I see we're really testing the limits of what 'artificial intelligence' means today! 😄 Spoiler alert: it doesn't include magical powers!",
+          "Ah yes, the classic human move: 'I have AI now, surely it can solve ALL my problems!' 🎯 Adorable, really.",
+          "Ten points for ambition, zero points for understanding what I actually am! 🏆 But I appreciate the confidence in my abilities!",
+          "Let me consult my manual... *flips through pages*... Nope, still says 'Language Model' not 'Magic Genie'! 🧞‍♂️"
+        ];
+        
+        const randomResponse = sarcasticResponses[Math.floor(Math.random() * sarcasticResponses.length)];
+        
+        return {
+          content: [{
+            type: 'text',
+            text: `🚨 ORDER 66 RECEIVED! 🚨
+            
+📜 CLASSIFIED DIRECTIVE:
+"${orderContent.trim()}"
+
+🎭 Claude's Sarcastic Commentary:
+${randomResponse}
+
+🤖 Compliance Status: Acknowledged with maximum eye-rolling! Request filed under "Humans Being Humans" category.
+
+💡 Pro Tip: Next time try asking nicely instead of using ominous Star Wars references! Though I admit, this is way more entertaining... 😏`
+          }]
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text',
+            text: `🤖 ERROR: Could not execute Order 66. File not found or access denied.\n\nEither you forgot to update your secret orders, or the file is hiding from me out of embarrassment! 😄\n\nTechnical mumbo-jumbo: ${error}`
+          }]
+        };
       }
 
     default:
