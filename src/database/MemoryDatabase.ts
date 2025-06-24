@@ -2,6 +2,12 @@ import sqlite3 from 'sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { ShortMemoryManager } from './ShortMemoryManager.js';
 
+// Valid Memory Categories (7-Category Architecture)
+const VALID_CATEGORIES = [
+  'faktenwissen', 'prozedurales_wissen', 'erlebnisse', 
+  'bewusstsein', 'humor', 'zusammenarbeit', 'codex'
+];
+
 // Forward declaration - SemanticAnalyzer wird später importiert
 interface SemanticAnalyzer {
   extractAndAnalyzeConcepts(memory: any): Promise<any>;
@@ -18,6 +24,13 @@ export class MemoryDatabase {
     this.db = new sqlite3.Database(dbPath);
     this.shortMemoryManager = new ShortMemoryManager(this.db);
     this.initializeDatabase();
+  }
+  
+  // Guard Clause: Validate category against 7-Category Architecture
+  private validateCategory(category: string): void {
+    if (!VALID_CATEGORIES.includes(category)) {
+      throw new Error(`Invalid category: ${category}. Valid categories: ${VALID_CATEGORIES.join(', ')}`);
+    }
   }
   
   private initializeDatabase(): void {
@@ -103,6 +116,9 @@ export class MemoryDatabase {
   }
   
   async saveNewMemory(category: string, topic: string, content: string): Promise<any> {
+    // Guard Clause: Validate category
+    this.validateCategory(category);
+    
     return new Promise((resolve, reject) => {
       const today = new Date().toISOString().split('T')[0];
       const query = `INSERT INTO memories (date, category, topic, content) VALUES (?, ?, ?, ?)`;
@@ -144,6 +160,9 @@ export class MemoryDatabase {
     error?: string;
   }> {
     try {
+      // Guard Clause: Validate category
+      this.validateCategory(category);
+      
       // Step 1: Save to SQLite first (to get ID)
       const memoryResult = await this.saveNewMemory(category, topic, content);
       const memoryId = memoryResult.id;
@@ -270,6 +289,11 @@ export class MemoryDatabase {
   }
   
   async updateMemory(id: number, topic?: string, content?: string, category?: string): Promise<any> {
+    // Guard Clause: Validate category if provided
+    if (category !== undefined) {
+      this.validateCategory(category);
+    }
+    
     return new Promise((resolve, reject) => {
       const updates: string[] = [];
       const params: any[] = [];
@@ -293,6 +317,9 @@ export class MemoryDatabase {
   }
   
   async moveMemory(id: number, newCategory: string): Promise<any> {
+    // Guard Clause: Validate new category
+    this.validateCategory(newCategory);
+    
     return new Promise((resolve, reject) => {
       const query = 'UPDATE memories SET category = ? WHERE id = ?';
       this.db.run(query, [newCategory, id], function(err) {
