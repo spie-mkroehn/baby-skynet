@@ -13,7 +13,8 @@ import {
 import { MemoryDatabase } from './database/MemoryDatabase.js';
 import { SemanticAnalyzer } from './llm/SemanticAnalyzer.js';
 import { JobProcessor } from './jobs/JobProcessor.js';
-import { LanceDBClient } from './vectordb/LanceDBClient.js';
+import { ChromaDBClient } from './vectordb/ChromaDBClient.js';
+import { EmbeddingFactory } from './embedding/index.js';
 
 
 /**
@@ -72,7 +73,7 @@ const { dbPath, brainModel, lancedbPath } = parseArgs();
 // Global instances
 let memoryDb: MemoryDatabase | null = null;
 let jobProcessor: JobProcessor | null = null;
-let lanceClient: LanceDBClient | null = null;
+let chromaClient: ChromaDBClient | null = null;
 let analyzer: SemanticAnalyzer | null = null;
 
 // LLM Model und Provider konfigurieren
@@ -99,19 +100,27 @@ if (dbPath) {
   console.error('❌ No --db-path specified');
 }
 
-// LanceDB initialisieren (async)
-async function initializeLanceDB() {
-  if (lancedbPath) {
-    try {
-      lanceClient = new LanceDBClient(lancedbPath);
-      await lanceClient.initialize();
-      console.error(`✅ LanceDB connected: ${lancedbPath}`);
-    } catch (error) {
-      console.error(`❌ LanceDB initialization failed: ${error}`);
-      lanceClient = null;
+// ChromaDB initialisieren (async)
+async function initializeChromaDB() {
+  try {
+    // Get collection name from ARGV
+    const collectionName = process.argv
+      .find(arg => arg.startsWith('--chroma-collection='))
+      ?.split('=')[1] || 'claude-main';
+    
+    chromaClient = new ChromaDBClient('http://localhost:8000', collectionName);
+    await chromaClient.initialize();
+    
+    // Link ChromaDB client to MemoryDatabase
+    if (memoryDb) {
+      memoryDb.chromaClient = chromaClient;
+      console.error('🎯 ChromaDB linked to MemoryDatabase');
     }
-  } else {
-    console.error('❌ No --lancedb-path specified');
+    
+    console.error(`✅ ChromaDB connected: Collection "${collectionName}"`);
+  } catch (error) {
+    console.error(`❌ ChromaDB initialization failed: ${error}`);
+    chromaClient = null;
   }
 }
 
@@ -270,6 +279,37 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object',
           properties: {},
+        },
+      },
+      {
+        name: 'test_chromadb',
+        description: '🎨 Test ChromaDB über Docker (localhost:8000)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', description: 'Test action: heartbeat, insert, search, or full', default: 'full' },
+            query: { type: 'string', description: 'Search query for testing', default: 'test' }
+          },
+        },
+      },
+      {
+        name: 'insert_chromadb',
+        description: '📝 Insert documents into ChromaDB with OpenAI embeddings',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            documents: { 
+              type: 'array', 
+              items: { type: 'string' },
+              description: 'Array of text documents to insert into ChromaDB' 
+            },
+            metadata: { 
+              type: 'object', 
+              description: 'Optional metadata to attach to all documents',
+              additionalProperties: true
+            }
+          },
+          required: ['documents']
         },
       },
     ];
@@ -487,21 +527,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `❌ No semantic concepts extracted from memory ${memoryId}` }] };
         }
 
-        // LanceDB Integration: Store concepts
-        let lancedbStatus = '';
-        if (lanceClient) {
+        // ChromaDB Integration: Store concepts
+        let chromadbStatus = '';
+        if (chromaClient) {
           try {
-            const storageResult = await lanceClient.storeConcepts(memory, result.semantic_concepts);
+            const storageResult = await chromaClient.storeConcepts(memory, result.semantic_concepts);
             if (storageResult.success) {
-              lancedbStatus = `\n🎯 LanceDB: Successfully stored ${storageResult.stored} concepts`;
+              chromadbStatus = `\n🎯 ChromaDB: Successfully stored ${storageResult.stored} concepts`;
             } else {
-              lancedbStatus = `\n⚠️ LanceDB: Partial storage (${storageResult.stored} stored, ${storageResult.errors.length} errors)`;
+              chromadbStatus = `\n⚠️ ChromaDB: Partial storage (${storageResult.stored} stored, ${storageResult.errors.length} errors)`;
             }
           } catch (error) {
-            lancedbStatus = `\n❌ LanceDB: Storage failed - ${error}`;
+            chromadbStatus = `\n❌ ChromaDB: Storage failed - ${error}`;
           }
         } else {
-          lancedbStatus = '\n📊 LanceDB: Not available (no --lancedb-path specified)';
+          chromadbStatus = '\n📊 ChromaDB: Not available (initialization failed)';
         }
         
         // Return both structured JSON and formatted display
@@ -535,7 +575,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             type: 'text',
             text: `🧠 Complete Semantic Analysis Pipeline (Memory ${memoryId})\n\n` +
                   `📝 Original: ${memory.topic}\n` +
-                  `📂 Category: ${memory.category}${lancedbStatus}\n\n` +
+                  `📂 Category: ${memory.category}${chromadbStatus}\n\n` +
                   `🔍 Extracted ${result.semantic_concepts.length} Semantic Concepts:\n\n${conceptsText}\n\n` +
                   `📋 Structured JSON Output:\n\n\`\`\`json\n${jsonOutput}\n\`\`\``
           }]
@@ -746,6 +786,243 @@ ${randomResponse}
         };
       }
 
+    case 'test_chromadb':
+      try {
+        const action = (args?.action as string) || 'full';
+        const query = (args?.query as string) || 'test';
+        
+        let testResults = '🎨 ChromaDB Docker Integration Test\n\n';
+        testResults += '📡 Target: http://localhost:8000\n\n';
+        
+        try {
+          // Embedding provider erstellen
+          const embeddingProvider = EmbeddingFactory.createFromEnv();
+
+          // Test connection
+          const embeddingWorks = await embeddingProvider.testConnection();
+          if (!embeddingWorks) {
+              throw new Error('Embedding provider connection failed');
+          }
+
+          // Import ChromaDB
+          const { ChromaClient } = await import('chromadb');
+          testResults += '✅ ChromaDB module imported successfully\n';
+          
+          // Initialize client
+          const chromaClient = new ChromaClient({ path: "http://localhost:8000" });
+          testResults += '✅ ChromaClient initialized\n\n';
+          
+          // Test 1: Heartbeat
+          if (action.includes('heartbeat') || action === 'full') {
+            testResults += '💓 Testing heartbeat...\n';
+            
+            try {
+              const heartbeat = await chromaClient.heartbeat();
+              testResults += `✅ Heartbeat successful: ${JSON.stringify(heartbeat)}\n`;
+            } catch (heartbeatError) {
+              testResults += `❌ Heartbeat failed: ${heartbeatError}\n`;
+              testResults += `💡 Is ChromaDB Docker container running on localhost:8000?\n`;
+            }
+          }
+          
+          // Test 2: Collection management
+          if (action.includes('insert') || action === 'full') {
+            testResults += '\n📝 Testing collection and document insertion...\n';
+            
+            try {
+              const collectionName = process.argv
+                  .find(arg => arg.startsWith('--chroma-collection='))
+                  ?.split('=')[1] || 'claude-main';
+              
+              // Try to get or create collection
+              let collection
+              collection = await chromaClient.getOrCreateCollection({
+                  name: collectionName, // <- Aus ARGV lesen!
+                  embeddingFunction: embeddingProvider // <- Das ist der Trick!
+              });
+              testResults += `✅ Found or created collection "${collectionName}"\n`;
+              
+              // Insert test document
+              const testId = `test_${Date.now()}`;
+              await collection.add({
+                ids: [testId],
+                documents: ['This is a test document for ChromaDB integration with semantic search capabilities.'],
+                metadatas: [{
+                  category: 'test',
+                  topic: 'ChromaDB Integration Test',
+                  created_at: new Date().toISOString()
+                }]
+              });
+              
+              testResults += `✅ Document "${testId}" inserted successfully\n`;
+              
+              // Check collection count
+              const count = await collection.count();
+              testResults += `📊 Collection now has ${count} documents\n`;
+              
+            } catch (insertError) {
+              testResults += `❌ Insert test failed: ${insertError}\n`;
+            }
+          }
+          
+          // Test 3: Search
+          if (action.includes('search') || action === 'full') {
+            testResults += '\n🔍 Testing semantic search...\n';
+            
+            try {
+              const collectionName = process.argv
+                  .find(arg => arg.startsWith('--chroma-collection='))
+                  ?.split('=')[1] || 'claude-main';
+
+              const collection = await chromaClient.getCollection({ 
+                  name: collectionName,  // <- Statt 'claude_test'
+                  embeddingFunction: embeddingProvider  // <- Eventuell auch hier nötig?
+              });   
+
+              const searchResults = await collection.query({
+                queryTexts: [query],
+                nResults: 3
+              });
+              
+              testResults += `✅ Search completed! Found ${searchResults.ids[0]?.length || 0} results\n`;
+              
+              if (searchResults.documents[0] && searchResults.documents[0].length > 0) {
+                testResults += `📄 Results:\n`;
+                searchResults.documents[0].forEach((doc: any, index: number) => {
+                  const metadata = searchResults.metadatas?.[0]?.[index];
+                  testResults += `   ${index + 1}. ${doc?.substring(0, 80)}...\n`;
+                  if (metadata) {
+                    testResults += `      Metadata: ${JSON.stringify(metadata)}\n`;
+                  }
+                });
+              }
+              
+            } catch (searchError) {
+              testResults += `❌ Search failed: ${searchError}\n`;
+            }
+          }
+          
+        } catch (importError) {
+          testResults += `❌ ChromaDB import failed: ${importError}\n`;
+          testResults += `💡 Try: npm install chromadb\n`;
+        }
+        
+        testResults += '\n💡 Next Steps:\n';
+        testResults += '- Integrate ChromaDB as primary vector store\n';
+        testResults += '- Replace LanceDB in hybrid search\n';
+        testResults += '- Prepare for LangChain.js integration\n';
+        
+        return {
+          content: [{
+            type: 'text',
+            text: testResults
+          }]
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text',
+            text: `❌ ChromaDB test failed: ${error}`
+          }]
+        };
+      }
+
+    case 'insert_chromadb':
+      try {
+        const documents = args?.documents as string[];
+        const metadata = args?.metadata as Record<string, any> || {};
+        
+        if (!documents || !Array.isArray(documents) || documents.length === 0) {
+          throw new Error('documents parameter is required and must be a non-empty array');
+        }
+        
+        let result = '📝 ChromaDB Document Insertion\n\n';
+        result += `📡 Target: http://localhost:8000\n`;
+        result += `📄 Documents to insert: ${documents.length}\n\n`;
+        
+        try {
+          // Initialize embedding provider
+          const embeddingProvider = EmbeddingFactory.createFromEnv();
+          result += '✅ OpenAI Embedding Provider initialized\n';
+          
+          // Test embedding connection
+          const embeddingWorks = await embeddingProvider.testConnection();
+          if (!embeddingWorks) {
+            throw new Error('Embedding provider connection failed');
+          }
+          result += '✅ Embedding provider connection verified\n';
+          
+          // Import ChromaDB
+          const { ChromaClient } = await import('chromadb');
+          result += '✅ ChromaDB module imported\n';
+          
+          // Initialize ChromaDB client
+          const chromaClient = new ChromaClient({ path: "http://localhost:8000" });
+          result += '✅ ChromaClient initialized\n\n';
+          
+          // Get collection name from ARGV
+          const collectionName = process.argv
+            .find(arg => arg.startsWith('--chroma-collection='))
+            ?.split('=')[1] || 'claude-main';
+          
+          // Get or create collection with embedding function
+          const collection = await chromaClient.getOrCreateCollection({
+            name: collectionName,
+            embeddingFunction: embeddingProvider
+          });
+          result += `✅ Collection "${collectionName}" ready\n\n`;
+          
+          // Prepare documents for insertion
+          const timestamp = new Date().toISOString();
+          const ids = documents.map((_, index) => `doc_${Date.now()}_${index}`);
+          const metadatas = documents.map((_, index) => ({
+            ...metadata,
+            inserted_at: timestamp,
+            document_index: index,
+            source: 'insert_chromadb_tool'
+          }));
+          
+          result += '📝 Inserting documents...\n';
+          
+          // Bulk insert documents
+          await collection.add({
+            ids: ids,
+            documents: documents,
+            metadatas: metadatas
+          });
+          
+          result += `✅ Successfully inserted ${documents.length} documents\n`;
+          
+          // Get updated collection count
+          const totalCount = await collection.count();
+          result += `📊 Collection now contains ${totalCount} total documents\n\n`;
+          
+          // Show inserted document preview
+          result += '📄 Inserted documents:\n';
+          documents.forEach((doc, index) => {
+            const preview = doc.length > 60 ? doc.substring(0, 60) + '...' : doc;
+            result += `   ${index + 1}. [${ids[index]}] ${preview}\n`;
+          });
+          
+        } catch (error) {
+          result += `❌ ChromaDB insertion failed: ${error}\n`;
+        }
+        
+        return {
+          content: [{
+            type: 'text',
+            text: result
+          }]
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text',
+            text: `❌ Document insertion failed: ${error}`
+          }]
+        };
+      }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -753,8 +1030,8 @@ ${randomResponse}
 
 // Server starten
 async function main() {
-  // LanceDB initialisieren
-  await initializeLanceDB();
+  // ChromaDB initialisieren
+  await initializeChromaDB();
   
   const transport = new StdioServerTransport();
   await server.connect(transport);

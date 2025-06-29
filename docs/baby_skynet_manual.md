@@ -6,12 +6,14 @@ du verfügst über ein komplett autonomes Memory-Management-System mit semantisc
 
 ## 🔧 Technische Details
 
-- **MCP Server:** Baby-SkyNet v2.3 (TypeScript)
-- **Database:** `claude_memory.db` (SQLite) + `claude_lancedb` (Vector DB)
+- **MCP Server:** Baby-SkyNet v2.4 (TypeScript)
+- **Database:** `claude_memory.db` (SQLite) + **ChromaDB** (Vector DB via Docker)
 - **Zugriff:** Ausschließlich über Baby-SkyNet Tools
 - **Initialisierung:** Automatisch bei Server-Start
 - **LLM-Provider:** Ollama (lokal) + Anthropic API (Claude Haiku)
-- **Vector Database:** LanceDB für semantische Suche
+- **Vector Database:** ChromaDB (Docker-basiert, localhost:8000)
+- **Container Management:** Automatisches Docker Container Lifecycle Management
+- **Data Persistence:** Volume-Mapping zu Host-Verzeichnis
 - **Tabellen:**
   - `memories` - Haupt-Memory-Speicher (nur bedeutsame Memories!)
   - `analysis_jobs` - Asynchrone Semantic Analysis Jobs
@@ -51,6 +53,23 @@ analysis_results (id, job_id, memory_id, memory_type, confidence, extracted_conc
    - Klare Meldung an Mike mit Handlungsempfehlung
    - Fallback-Strategien angeben (z.B. "Kann Files nicht direkt lesen - bitte copy-paste")
    - **NICHT** mit eingeschränkter Funktionalität fortfahren ohne Warnung
+
+### 🐳 Phase 1.5: ChromaDB Container Management (automatisch)
+
+**ChromaDB Auto-Start Protokoll:**
+```bash
+# 1. Container-Status prüfen
+docker ps
+
+# 2. Falls leer: ChromaDB Container mit Volume-Mapping starten
+docker run -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_chromadb:/data -p 8000:8000 chromadb/chroma
+```
+
+**Automatische Ausführung:**
+- Vor jedem `test_chromadb` Tool automatisch Container-Status prüfen
+- Bei fehlendem Container: Eigenständig mit korrektem Volume-Mapping starten
+- Persistente Daten landen in Host-Verzeichnis für Backup/Synchronisation
+- **Fallback für Docker-Installation:** Hilfe bei Docker Desktop Installation anbieten
 
 ### 🧠 Phase 2: Memory-System Initialisierung (nur wenn Tools OK)
 
@@ -101,6 +120,12 @@ analysis_results (id, job_id, memory_id, memory_type, confidence, extracted_conc
   - LanceDB-Speicherung für semantische Suche (ALLE Memories)
   - Bedeutsamkeits-Check mit Claude's eigenen Kriterien
   - SQLite-Speicherung nur für bedeutsame Core Memories
+
+### 🐳 ChromaDB Management (1 Tool)
+- **`test_chromadb(action?, query?)`** - ChromaDB Docker Integration Test mit Auto-Container-Management
+  - **Action Options:** 'heartbeat', 'insert', 'search', 'full' (default)
+  - **Auto-Management:** Prüft Container-Status und startet bei Bedarf automatisch
+  - **Volume-Mapping:** Persistente Daten in Host-Verzeichnis
 
 ### Utility
 - **`hello_skynet(message)`** - Test/Debug-Gruß
@@ -324,7 +349,8 @@ baby-skynet:test_llm_connection()
 **v2.1:** Multi-Provider LLM-Integration (Ollama + Anthropic) + Semantic Analysis ✅
 **v2.2:** LanceDB Integration für semantische Suche ✅
 **v2.3:** Bedeutsamkeits-Analyse + Hybrid Memory Pipeline ✅
-**v2.4:** TODO: search_memories_advanced für semantische Suche
+**v2.4:** ChromaDB + Docker Integration mit Auto-Container-Management ✅
+**v2.5:** TODO: search_memories_advanced für semantische ChromaDB-Suche
 **v3.0:** Knowledge Graph für komplexe Beziehungen
 
 ## 🏆 Qualitätsvergleich LLM-Provider
@@ -355,11 +381,54 @@ baby-skynet:test_llm_connection()
 - Bedeutsamer Humor → LanceDB + SQLite
 
 **🔄 IN ENTWICKLUNG:**
-- search_memories_advanced für semantische LanceDB-Suche
+- search_memories_advanced für semantische ChromaDB-Suche
 - Code-Refactoring für bessere Modularität
+
+## 🐳 Docker Installation & Setup
+
+**Falls Docker nicht installiert ist:**
+
+### Windows Docker Desktop Installation:
+1. **Download:** https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe
+2. **Installation:** Als Administrator ausführen
+3. **WSL2 Backend:** Empfohlen für beste Performance
+4. **Nach Installation:** System-Neustart erforderlich
+5. **Verification:** `docker --version` in Command Prompt
+
+### Docker Test-Befehle:
+```bash
+# Docker Version prüfen
+docker --version
+
+# Docker Service Status
+docker ps
+
+# Ersten Test-Container starten
+docker run hello-world
+```
+
+**ChromaDB-spezifische Container-Befehle:**
+```bash
+# ChromaDB Container mit Volume-Mapping starten (Standard)
+docker run -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_chromadb:/data -p 8000:8000 chromadb/chroma
+
+# Container Status prüfen
+docker ps
+
+# Container stoppen (falls nötig)
+docker stop <container_id>
+
+# Alle gestoppten Container entfernen
+docker container prune
+```
+
+**Troubleshooting:**
+- **Port bereits belegt:** `netstat -ano | findstr :8000` um Prozess zu finden
+- **Permission Errors:** Docker Desktop als Administrator starten
+- **WSL2 Fehler:** Windows Features → "Windows Subsystem für Linux" aktivieren
 
 ---
 
-*Erstellt: 19.06.2025 | Version: 2.3*  
-*Autor: Claude & Mike | Zweck: Autonomes Memory-Management + Bedeutsamkeits-Analyse*  
-*Letztes Update: Nach Bedeutsamkeits-Pipeline Implementation (22.06.2025)*
+*Erstellt: 19.06.2025 | Version: 2.4*  
+*Autor: Claude & Mike | Zweck: Autonomes Memory-Management + ChromaDB Integration*  
+*Letztes Update: Nach ChromaDB Docker Auto-Management Implementation (25.06.2025)*

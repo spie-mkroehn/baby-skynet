@@ -14,11 +14,17 @@ interface SemanticAnalyzer {
   evaluateSignificance(memory: any, memoryType: string): Promise<any>;
 }
 
+// Forward declaration - ChromaDBClient wird später importiert
+interface ChromaDBClient {
+  storeConcepts(memory: any, concepts: any[]): Promise<{ success: boolean; stored: number; errors: string[] }>;
+}
+
 // SQLite Database Helper mit Job-Management
 export class MemoryDatabase {
   private db: sqlite3.Database;
   private shortMemoryManager: ShortMemoryManager;
   public analyzer: SemanticAnalyzer | null = null;
+  public chromaClient: ChromaDBClient | null = null;
   
   constructor(dbPath: string) {
     this.db = new sqlite3.Database(dbPath);
@@ -170,10 +176,32 @@ export class MemoryDatabase {
       // Get the saved memory for analysis
       const savedMemory = await this.getMemoryById(memoryId);
       
-      // Step 2: Semantic analysis and LanceDB storage
+      // Step 2: Semantic analysis and ChromaDB storage
       const analysisResult = await this.analyzer!.extractAndAnalyzeConcepts(savedMemory);
       if (analysisResult.error) {
         return { error: `Semantic analysis failed: ${analysisResult.error}` };
+      }
+      
+      // ChromaDB Storage: Store concepts with source metadata
+      if (this.chromaClient && analysisResult.semantic_concepts) {
+        try {
+          // Enhance concepts with source metadata
+          const enhancedConcepts = analysisResult.semantic_concepts.map((concept: any) => ({
+            ...concept,
+            source_memory_id: savedMemory.id,
+            source_category: savedMemory.category,
+            source_topic: savedMemory.topic,
+            source_date: savedMemory.date,
+            source_created_at: savedMemory.created_at
+          }));
+          
+          const storageResult = await this.chromaClient.storeConcepts(savedMemory, enhancedConcepts);
+          if (!storageResult.success) {
+            console.error(`ChromaDB storage failed: ${storageResult.errors.join(', ')}`);
+          }
+        } catch (error) {
+          console.error(`ChromaDB storage error: ${error}`);
+        }
       }
       
       // Extract the memory type from the first concept (they should all be the same type)
