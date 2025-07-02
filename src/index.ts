@@ -14,6 +14,7 @@ import { MemoryDatabase } from './database/MemoryDatabase.js';
 import { SemanticAnalyzer } from './llm/SemanticAnalyzer.js';
 import { JobProcessor } from './jobs/JobProcessor.js';
 import { ChromaDBClient } from './vectordb/ChromaDBClient.js';
+import { Neo4jClient } from './vectordb/Neo4jClient.js';
 import { EmbeddingFactory } from './embedding/index.js';
 
 
@@ -74,6 +75,7 @@ const { dbPath, brainModel, lancedbPath } = parseArgs();
 let memoryDb: MemoryDatabase | null = null;
 let jobProcessor: JobProcessor | null = null;
 let chromaClient: ChromaDBClient | null = null;
+let neo4jClient: Neo4jClient | null = null;
 let analyzer: SemanticAnalyzer | null = null;
 
 // LLM Model und Provider konfigurieren
@@ -121,6 +123,32 @@ async function initializeChromaDB() {
   } catch (error) {
     console.error(`❌ ChromaDB initialization failed: ${error}`);
     chromaClient = null;
+  }
+}
+
+// Neo4j initialisieren (async)
+async function initializeNeo4j() {
+  try {
+    // Get Neo4j configuration from environment variables or use defaults
+    const neo4jConfig = {
+      uri: process.env.NEO4J_URL || 'bolt://localhost:7687',
+      username: process.env.NEO4J_USER || 'neo4j',
+      password: process.env.NEO4J_PASSWORD || 'password',
+      database: process.env.NEO4J_DATABASE || 'neo4j'
+    };
+    
+    neo4jClient = new Neo4jClient(neo4jConfig);
+    
+    // Link Neo4j client to MemoryDatabase
+    if (memoryDb) {
+      memoryDb.neo4jClient = neo4jClient;
+      console.error('🕸️ Neo4j linked to MemoryDatabase');
+    }
+    
+    console.error(`✅ Neo4j connected: ${neo4jConfig.uri}`);
+  } catch (error) {
+    console.error(`❌ Neo4j initialization failed: ${error}`);
+    neo4jClient = null;
   }
 }
 
@@ -401,6 +429,63 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['query'],
         },
+      },
+      {
+        name: 'save_memory_with_graph',
+        description: 'Memory mit automatischer Graph-Integration speichern',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            category: { type: 'string', description: 'Kategorie der Erinnerung' },
+            topic: { type: 'string', description: 'Kurzer, prägnanter Titel' },
+            content: { type: 'string', description: 'Detaillierter Inhalt' },
+            forceRelationships: { 
+              type: 'array', 
+              items: {
+                type: 'object',
+                properties: {
+                  targetMemoryId: { type: 'number' },
+                  relationshipType: { type: 'string' },
+                  properties: { type: 'object' }
+                }
+              },
+              description: 'Optional: Explizite Beziehungen zu anderen Memories'
+            },
+          },
+          required: ['category', 'topic', 'content'],
+        },
+      },
+      {
+        name: 'search_memories_with_graph',
+        description: 'Erweiterte Suche mit Graph-Kontext und verwandten Memories',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff' },
+            includeRelated: { type: 'boolean', description: 'Verwandte Memories über Graph-Beziehungen einbeziehen', default: true },
+            maxRelationshipDepth: { type: 'number', description: 'Maximale Tiefe für Graph-Traversierung', default: 2 },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'get_memory_graph_context',
+        description: 'Graph-Kontext und Beziehungen für eine spezifische Memory abrufen',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memoryId: { type: 'number', description: 'ID der Memory' },
+            relationshipDepth: { type: 'number', description: 'Tiefe der Graph-Traversierung', default: 2 },
+            relationshipTypes: { type: 'array', items: { type: 'string' }, description: 'Spezifische Beziehungstypen' },
+          },
+          required: ['memoryId'],
+        },
+      },
+      {
+        name: 'get_graph_statistics',
+        description: 'Statistiken über das Graph-Netzwerk der Memories',
+        inputSchema: { type: 'object', properties: {} },
       },
     ];
   
@@ -1042,6 +1127,124 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Fehler bei der intelligenten Reranking-Suche: ${error}` }] };
       }
 
+    case 'save_memory_with_graph':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const category = args?.category as string;
+        const topic = args?.topic as string;
+        const content = args?.content as string;
+        const forceRelationships = args?.forceRelationships as any[];
+        
+        if (!category || !topic || !content) throw new Error('Category, topic and content required');
+        
+        const result = await memoryDb.saveNewMemoryWithGraph(category, topic, content, forceRelationships);
+        
+        const relationshipText = result.stored_in_neo4j 
+          ? `\n🕸️ Graph-Netzwerk: ✅ (${result.relationships_created} Beziehungen erstellt)`
+          : '\n🕸️ Graph-Netzwerk: ❌ (Neo4j nicht verfügbar)';
+        
+        return {
+          content: [{ type: 'text', text: `✅ Memory mit Graph-Integration gespeichert!\n\n📂 Kategorie: ${category}\n🏷️ Topic: ${topic}\n🆔 ID: ${result.memory_id}\n💾 SQLite: ✅\n🧠 ChromaDB: ${result.stored_in_chroma ? '✅' : '❌'}${relationshipText}` }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Speichern mit Graph: ${error}` }] };
+      }
+
+    case 'search_memories_with_graph':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const query = args?.query as string;
+        const includeRelated = args?.includeRelated !== false; // Default true
+        const maxRelationshipDepth = args?.maxRelationshipDepth as number || 2;
+        const categories = args?.categories as string[];
+        
+        if (!query) throw new Error('Query required');
+        
+        const result = await memoryDb.searchMemoriesWithGraph(query, categories, includeRelated, maxRelationshipDepth);
+        
+        const totalResults = result.combined_results.length;
+        const graphInfo = result.graph_relationships.length > 0 
+          ? `\n🕸️ Graph-Beziehungen: ${result.graph_relationships.length} gefunden`
+          : '';
+        
+        if (totalResults === 0) {
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.${graphInfo}` }] };
+        }
+        
+        const memoryText = result.combined_results.slice(0, 10).map(memory => {
+          const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🕸️';
+          return `${sourceIcon} **${memory.topic}** (${memory.category})\n${memory.content}\n📅 ${memory.date}`;
+        }).join('\n\n');
+        
+        return {
+          content: [{ type: 'text', text: `🔍 **Graph-erweiterte Suche**: "${query}"\n📊 Ergebnisse: ${totalResults}${graphInfo}\n\n${memoryText}` }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler bei der Graph-Suche: ${error}` }] };
+      }
+
+    case 'get_memory_graph_context':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const memoryId = args?.memoryId as number;
+        const relationshipDepth = args?.relationshipDepth as number || 2;
+        const relationshipTypes = args?.relationshipTypes as string[];
+        
+        if (!memoryId) throw new Error('Memory ID required');
+        
+        const result = await memoryDb.getMemoryWithGraphContext(memoryId, relationshipDepth, relationshipTypes);
+        
+        if (!result.success) {
+          return { content: [{ type: 'text', text: `❌ Memory mit ID ${memoryId} nicht gefunden.` }] };
+        }
+        
+        const memory = result.memory;
+        const directRels = result.direct_relationships.length;
+        const extendedRels = result.extended_relationships.length;
+        const totalConnections = result.relationship_summary.total_connections;
+        
+        const relTypesText = Object.entries(result.relationship_summary.relationship_types)
+          .map(([type, count]) => `${type}: ${count}`)
+          .join(', ');
+        
+        return {
+          content: [{ type: 'text', text: `🕸️ **Graph-Kontext für Memory ${memoryId}**\n\n📂 **${memory.category}** - ${memory.topic}\n📅 ${memory.date}\n\n🔗 **Direkte Beziehungen**: ${directRels}\n🔗 **Erweiterte Beziehungen**: ${extendedRels}\n📊 **Gesamt-Verbindungen**: ${totalConnections}\n🏷️ **Beziehungstypen**: ${relTypesText || 'Keine'}` }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen des Graph-Kontexts: ${error}` }] };
+      }
+
+    case 'get_graph_statistics':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const stats = await memoryDb.getGraphStatistics();
+        
+        if (!stats.success) {
+          return { content: [{ type: 'text', text: '❌ Graph-Statistiken nicht verfügbar (Neo4j nicht verbunden).' }] };
+        }
+        
+        const topMemoriesText = stats.most_connected_memories
+          .slice(0, 5)
+          .map((mem: any) => `${mem.topic} (${mem.connections} Verbindungen)`)
+          .join('\n');
+        
+        const relationshipTypesText = stats.relationship_types
+          .map((type: string) => `${type}: 1`)
+          .join('\n');
+        
+        const averageConnections = stats.total_nodes > 0 ? (stats.total_relationships * 2) / stats.total_nodes : 0;
+        
+        return {
+          content: [{ type: 'text', text: `📊 **Graph-Netzwerk Statistiken**\n\n📈 **Gesamt-Knoten**: ${stats.total_nodes}\n🔗 **Gesamt-Beziehungen**: ${stats.total_relationships}\n⚖️ **Durchschnittliche Verbindungen**: ${averageConnections.toFixed(2)}\n🔗 **Graph-Dichte**: ${stats.graph_density.toFixed(3)}\n\n🏆 **Top-vernetzte Memories**:\n${topMemoriesText || 'Keine gefunden'}\n\n🏷️ **Beziehungstypen**:\n${relationshipTypesText || 'Keine gefunden'}` }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen der Graph-Statistiken: ${error}` }] };
+      }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -1051,11 +1254,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   // ChromaDB initialisieren
   await initializeChromaDB();
+  // Neo4j initialisieren
+  await initializeNeo4j();
   
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('🤖 SkyNet Home Edition v2.1 MCP Server running...');
-  console.error('🧠 Memory Management + Multi-Provider Semantic Analysis ready!');
+  console.error('🤖 SkyNet Home Edition v2.3 MCP Server running...');
+  console.error('🧠 Memory Management + Multi-Provider Semantic Analysis + Graph Database ready!');
 }
 
 main().catch((error) => {

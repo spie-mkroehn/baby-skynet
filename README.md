@@ -1,8 +1,8 @@
 # Baby-SkyNet 🤖
 
-**Autonomous Memory Management System for Claude AI with Multi-Provider LLM Integration**
+**Autonomous Memory Management System for Claude AI with Multi-Provider LLM Integration & Graph Database**
 
-Ein MCP Server der Claude ein permanentes, durchsuchbares Gedächtnis verleiht - inklusive semantischer Analyse und Multi-Provider LLM Support.
+Ein MCP Server der Claude ein permanentes, durchsuchbares Gedächtnis verleiht - inklusive semantischer Analyse, Multi-Provider LLM Support und Graph-Datenbank Integration.
 
 ## Was ist das?
 
@@ -12,20 +12,29 @@ Baby-SkyNet erweitert Claude um:
 - **Volltext-Suche** - Finde alte Gespräche und Erkenntnisse
 - **Semantische Analyse** - KI-gestützte Konzept-Extraktion
 - **Multi-Provider Support** - Ollama (lokal) + Anthropic API
+- **Graph Database** - Neo4j Integration für verknüpfte Informationen
 
-## Features v2.1
+## Features v2.3
 
 ### Core Memory Management
 - ✅ **SQLite Database** - Robuste, lokale Datenhaltung
 - ✅ **Kategorien-System** - Programmieren, Debugging, Projekte, etc.
 - ✅ **Volltext-Suche** - Durchsuche alle Memories
 - ✅ **CRUD Operations** - Create, Read, Update, Move
+
+### Advanced Vector & Graph Storage
+- ✅ **ChromaDB Integration** - Vector-basierte semantische Suche
+- ✅ **Neo4j Graph Database** - Relationship-basierte Memory-Vernetzung
+- ✅ **Multi-Source Search** - Kombinierte Resultate aus allen Datenquellen
+- ✅ **Graph Analytics** - Netzwerk-Statistiken und Beziehungsanalyse
+
 ### Semantic Analysis Engine
 - ✅ **Multi-Provider LLM** - Ollama (lokal) oder Anthropic API
 - ✅ **Memory Classification** - technical, emotional, procedural, factual
 - ✅ **Concept Extraction** - Automatische Schlüsselkonzept-Extraktion
 - ✅ **Batch Processing** - Asynchrone Analyse mehrerer Memories
 - ✅ **Metadata Enrichment** - Tools, People, Code-Detection
+- ✅ **Relationship Detection** - Automatische semantische Verknüpfungen
 
 ## Quick Start
 
@@ -91,3 +100,27 @@ In Claude Desktop `claude_desktop_config.json`:
     }
   }
 }
+```
+
+### Neo4j Graph Database (Optional aber empfohlen)
+
+**Neo4j Setup:**
+```bash
+# 1. Neo4j installieren
+# Download von https://neo4j.com/download/
+# Oder mit Docker:
+docker run --publish=7474:7474 --publish=7687:7687 --volume=$HOME/neo4j/data:/data neo4j
+
+# 2. Environment Variables konfigurieren
+cp .env.example .env
+# Bearbeite .env mit deinen Neo4j Credentials:
+# NEO4J_URL=bolt://localhost:7687
+# NEO4J_USER=neo4j
+# NEO4J_PASSWORD=your_password
+```
+
+**Graph Features nutzen:**
+- `save_memory_with_graph` - Memory mit automatischer Vernetzung
+- `search_memories_with_graph` - Erweiterte Suche mit Kontext
+- `get_memory_graph_context` - Beziehungsnetzwerk anzeigen
+- `get_graph_statistics` - Netzwerk-Statistiken

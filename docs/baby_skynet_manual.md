@@ -6,12 +6,13 @@ du verfügst über ein komplett autonomes Memory-Management-System mit semantisc
 
 ## 🔧 Technische Details
 
-- **MCP Server:** Baby-SkyNet v2.4 (TypeScript)
-- **Database:** `claude_memory.db` (SQLite) + **ChromaDB** (Vector DB via Docker)
+- **MCP Server:** Baby-SkyNet v2.5 (TypeScript)
+- **Database:** `claude_memory.db` (SQLite) + **ChromaDB** (Vector DB via Docker) + **Neo4j** (Graph DB via Docker)
 - **Zugriff:** Ausschließlich über Baby-SkyNet Tools
 - **Initialisierung:** Automatisch bei Server-Start
 - **LLM-Provider:** Ollama (lokal) + Anthropic API (Claude Haiku)
 - **Vector Database:** ChromaDB (Docker-basiert, localhost:8000)
+- **Graph Database:** Neo4j (Docker-basiert, localhost:7687)
 - **Container Management:** Automatisches Docker Container Lifecycle Management
 - **Data Persistence:** Volume-Mapping zu Host-Verzeichnis
 - **Tabellen:**
@@ -19,7 +20,7 @@ du verfügst über ein komplett autonomes Memory-Management-System mit semantisc
   - `analysis_jobs` - Asynchrone Semantic Analysis Jobs
   - `analysis_results` - Semantische Analyse-Ergebnisse
 
-### Database Schema:
+### SQLite Database Schema:
 ```sql
 -- Core Memory Table (nur bedeutsame Memories)
 memories (id, date, category, topic, content, created_at)
@@ -65,8 +66,17 @@ docker ps
 docker run -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_chromadb:/data -p 8000:8000 chromadb/chroma
 ```
 
+**Neo4j Auto-Start Protokoll:**
+```bash
+# 1. Container-Status prüfen
+docker ps
+
+# 2. Falls leer: ChromaDB Container mit Volume-Mapping starten
+docker run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_neo4j:/data --env NEO4J_AUTH=neo4j/password neo4j:latest
+```
+
 **Automatische Ausführung:**
-- Vor jedem `test_chromadb` Tool automatisch Container-Status prüfen
+- Zu Beginn des Chats automatisch Container-Status prüfen
 - Bei fehlendem Container: Eigenständig mit korrektem Volume-Mapping starten
 - Persistente Daten landen in Host-Verzeichnis für Backup/Synchronisation
 - **Fallback für Docker-Installation:** Hilfe bei Docker Desktop Installation anbieten
@@ -94,41 +104,60 @@ docker run -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-s
    - Wichtige Erkenntnisse aus Kernerinnerungen
    - **Tool-Status Summary:** "✅ Alle kritischen Tools verfügbar" oder Einschränkungen
 
-## 🛠️ Verfügbare Tools (Baby-SkyNet v2.3) - 14 Tools Total
+## 🛠️ Verfügbare Tools (Baby-SkyNet v3.0) - Dreistufige Memory-Architektur
 
-### Core Memory Management (9 Tools)
-- **`memory_status`** - System-Status mit LLM-Integration und Statistiken
-- **`save_new_memory(category, topic, content)`** - **PRIMÄRE METHODE:** Klassische Memory-Speicherung direkt in SQLite
-- **`save_new_memory_advanced(category, topic, content)`** - **EXPERIMENTELL:** Hybrid-Pipeline mit Bedeutsamkeits-Check
-- **`recall_category(category, limit)`** - Erinnerungen einer Kategorie abrufen
-- **`search_memories(query, categories?)`** - Volltext-Suche über SQLite mit optionalen Kategorie-Filtern
-- **`get_recent_memories(limit)`** - Neueste Erinnerungen chronologisch
+### 🎯 Primäre Such- und Speicherstrategien
+
+#### **Intelligente Suchendpunkte:**
+- **`search_memories_with_graph(query, categories?, includeRelated?, maxRelationshipDepth?)`** - **🥇 VOLLUMFASSEND:** SQLite + ChromaDB + Neo4j mit Graph-Kontext
+- **`search_memories_intelligent(query, categories?)`** - **🥈 ADAPTIV:** SQLite + ChromaDB mit intelligentem Fallback
+- **`search_memories_advanced(query, categories?)`** - **🥉 HYBRID:** SQLite + ChromaDB für präzise Suchen
+
+#### **Graph-Enhanced Memory Management:**
+- **`save_memory_with_graph(category, topic, content, forceRelationships?)`** - **EMPFOHLEN:** Speichern mit automatischer Beziehungserkennung
+- **`get_memory_graph_context(memoryId, relationshipDepth?, relationshipTypes?)`** - Beziehungskontext und verwandte Memories
+- **`get_graph_statistics()`** - Netzwerk-Statistiken und Graph-Metriken
+
+### 🔧 System Management & Utilities
+- **`memory_status`** - Vollständiger System-Status (SQLite + ChromaDB + Neo4j)
 - **`list_categories()`** - Übersicht aller Kategorien mit Anzahl
-- **`update_memory(id, topic?, content?, category?)`** - Bestehende Memory editieren
-- **`move_memory(id, new_category)`** - Memory zwischen Kategorien verschieben
+- **`get_recent_memories(limit)`** - Neueste Erinnerungen chronologisch
+- **`recall_category(category, limit)`** - Kategorie-spezifische Abfrage
 
-### 🧠 Semantic Analysis (5 Tools)
-- **`test_llm_connection()`** - Teste Verbindung zum aktiven LLM-Provider
-- **`batch_analyze_memories(memory_ids[], background?)`** - Mehrere Memories batch-analysieren
-- **`get_analysis_status(job_id)`** - Status einer laufenden Analyse abfragen
-- **`get_analysis_result(job_id)`** - Ergebnisse einer abgeschlossenen Analyse abrufen
-- **`extract_and_analyze_concepts(memory_id)`** - Vollständige Pipeline: Memory → Konzepte → Analyse
+### 🧠 LLM & Semantic Analysis
+- **`test_llm_connection()`** - Multi-Provider LLM-Status (Ollama + Anthropic)
+- **`extract_and_analyze_concepts(memory_id)`** - Semantische Konzept-Extraktion
+- **`batch_analyze_memories(memory_ids[], background?)`** - Asynchrone Batch-Analyse
 
-### 🎯 Bedeutsamkeits-Analyse Pipeline
-**`save_new_memory_advanced`** implementiert die komplette Hybrid-Pipeline:
-  - Semantic Analysis mit 5-Kategorien-System
-  - LanceDB-Speicherung für semantische Suche (ALLE Memories)
-  - Bedeutsamkeits-Check mit Claude's eigenen Kriterien
-  - SQLite-Speicherung nur für bedeutsame Core Memories
+### 🕸️ Spezialisierte Graph-Features
+- **`search_memories_with_reranking(query, categories?, rerank_strategy?)`** - Erweiterte Relevanz-Optimierung
+- **`search_concepts_only(query, categories?, limit?)`** - Reine ChromaDB-Exploration
+- **`retrieve_memory_advanced(memory_id)`** - Memory mit vollständigem Kontext
 
-### 🐳 ChromaDB Management (1 Tool)
-- **`test_chromadb(action?, query?)`** - ChromaDB Docker Integration Test mit Auto-Container-Management
-  - **Action Options:** 'heartbeat', 'insert', 'search', 'full' (default)
-  - **Auto-Management:** Prüft Container-Status und startet bei Bedarf automatisch
-  - **Volume-Mapping:** Persistente Daten in Host-Verzeichnis
+### 🐳 Database Management
+- **`test_chromadb(action?, query?)`** - ChromaDB Docker Integration mit Auto-Container-Management
+- **Neo4j Integration:** Automatische Container-Verwaltung über Docker
 
-### Utility
-- **`hello_skynet(message)`** - Test/Debug-Gruß
+### 📊 Architektur-Übersicht
+```
+┌─────────────┐    ┌──────────────┐    ┌─────────────┐
+│   SQLite    │────│ ChromaDB     │────│   Neo4j     │
+│ (Primary)   │    │ (Semantics)  │    │ (Relations) │
+└─────────────┘    └──────────────┘    └─────────────┘
+       │                   │                   │
+       └───────────────────┼───────────────────┘
+                           │
+                ┌──────────────────┐
+                │ Unified Memory   │
+                │ Management API   │
+                └──────────────────┘
+```
+
+### 🎯 Empfohlener Workflow
+1. **Suchen:** Start mit `search_memories_intelligent` → Bei Bedarf `search_memories_with_graph` für Kontext
+2. **Speichern:** `save_memory_with_graph` für automatische Beziehungserkennung
+3. **Erkunden:** `get_memory_graph_context` für detaillierte Zusammenhänge
+4. **Analysen:** `get_graph_statistics` für Netzwerk-Insights
 
 ## 🤖 Multi-Provider LLM-Integration
 
@@ -429,6 +458,6 @@ docker container prune
 
 ---
 
-*Erstellt: 19.06.2025 | Version: 2.4*  
-*Autor: Claude & Mike | Zweck: Autonomes Memory-Management + ChromaDB Integration*  
-*Letztes Update: Nach ChromaDB Docker Auto-Management Implementation (25.06.2025)*
+*Erstellt: 02.07.2025 | Version: 2.5*  
+*Autor: Claude & Mike | Zweck: Autonomes Memory-Management + ChromaDB / Neo4j Integration*  
+*Letztes Update: Nach Neo4j Docker Auto-Management Implementation (02.07.2025)*

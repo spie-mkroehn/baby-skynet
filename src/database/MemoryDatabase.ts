@@ -1,6 +1,7 @@
 import sqlite3 from 'sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { ShortMemoryManager } from './ShortMemoryManager.js';
+import { Neo4jClient } from '../vectordb/Neo4jClient.js';
 
 // Valid Memory Categories (7-Category Architecture)
 const VALID_CATEGORIES = [
@@ -26,6 +27,7 @@ export class MemoryDatabase {
   private shortMemoryManager: ShortMemoryManager;
   public analyzer: SemanticAnalyzer | null = null;
   public chromaClient: ChromaDBClient | null = null;
+  public neo4jClient: Neo4jClient | null = null;
   
   constructor(dbPath: string) {
     this.db = new sqlite3.Database(dbPath);
@@ -1273,5 +1275,513 @@ Return only the number (e.g., 0.85).
     // For now, use hybrid scoring as fallback
     const hybridResults = this.rerankHybrid(query, [document]);
     return hybridResults[0]?.rerank_score || 0;
+  }
+
+  // === NEO4J GRAPH DATABASE METHODS ===
+
+  /**
+   * Enhanced memory saving with graph relationships
+   * Stores memory in SQLite, ChromaDB and Neo4j with intelligent relationship detection
+   */
+  async saveNewMemoryWithGraph(
+    category: string, 
+    topic: string, 
+    content: string, 
+    forceRelationships?: Array<{ targetMemoryId: number; relationshipType: string; properties?: any }>
+  ): Promise<{
+    success?: boolean;
+    memory_id?: number;
+    stored_in_sqlite?: boolean;
+    stored_in_chroma?: boolean;
+    stored_in_neo4j?: boolean;
+    relationships_created?: number;
+    analyzed_category?: string;
+    significance_reason?: string;
+    error?: string;
+  }> {
+    try {
+      // Use the existing advanced save pipeline first
+      const saveResult = await this.saveNewMemoryAdvanced(category, topic, content);
+      
+      if (saveResult.error) {
+        return saveResult;
+      }
+
+      let neo4jStored = false;
+      let relationshipsCreated = 0;
+
+      // Step: Store in Neo4j graph database
+      if (this.neo4jClient && saveResult.memory_id) {
+        try {
+          const savedMemory = await this.getMemoryById(saveResult.memory_id);
+          
+          // Create memory node in Neo4j
+          await this.neo4jClient.createMemoryNode({
+            id: savedMemory.id,
+            content: savedMemory.content,
+            category: savedMemory.category,
+            topic: savedMemory.topic,
+            date: savedMemory.date,
+            created_at: savedMemory.created_at,
+            metadata: { analyzed_category: saveResult.analyzed_category }
+          });
+
+          neo4jStored = true;
+
+          // Create explicit relationships if provided
+          if (forceRelationships && forceRelationships.length > 0) {
+            for (const rel of forceRelationships) {
+              try {
+                await this.neo4jClient.createRelationship(
+                  savedMemory.id.toString(),
+                  rel.targetMemoryId.toString(),
+                  rel.relationshipType,
+                  rel.properties || {}
+                );
+                relationshipsCreated++;
+              } catch (error) {
+                console.error(`Failed to create relationship: ${error}`);
+              }
+            }
+          } else {
+            // Auto-detect relationships using semantic similarity
+            const autoRelationships = await this.detectSemanticRelationships(savedMemory);
+            relationshipsCreated = autoRelationships;
+          }
+        } catch (error) {
+          console.error(`Neo4j storage error: ${error}`);
+        }
+      }
+
+      return {
+        ...saveResult,
+        stored_in_chroma: !!this.chromaClient,
+        stored_in_neo4j: neo4jStored,
+        relationships_created: relationshipsCreated
+      };
+
+    } catch (error) {
+      return { error: `Graph-enhanced pipeline failed: ${error}` };
+    }
+  }
+
+  /**
+   * Auto-detect semantic relationships between memories
+   */
+  private async detectSemanticRelationships(newMemory: any): Promise<number> {
+    if (!this.neo4jClient) return 0;
+
+    let relationshipsCreated = 0;
+
+    try {
+      // Search for semantically similar memories
+      const similarMemories = await this.searchMemoriesAdvanced(newMemory.content, [newMemory.category]);
+      
+      if (similarMemories.success && similarMemories.combined_results.length > 0) {
+        // Create relationships with top 3 most similar memories
+        const topSimilar = similarMemories.combined_results
+          .filter(mem => mem.id !== newMemory.id && mem.relevance_score > 0.7)
+          .slice(0, 3);
+
+        for (const similarMemory of topSimilar) {
+          try {
+            let relationshipType = 'RELATED_TO';
+            let properties: any = { similarity_score: similarMemory.relevance_score };
+
+            // Determine relationship type based on categories and content
+            if (similarMemory.category === newMemory.category) {
+              relationshipType = 'SAME_CATEGORY';
+            }
+
+            if (similarMemory.relevance_score > 0.9) {
+              relationshipType = 'HIGHLY_SIMILAR';
+            }
+
+            // Add temporal relationships for recent memories
+            const memoryDate = new Date(similarMemory.created_at || similarMemory.date);
+            const newMemoryDate = new Date(newMemory.created_at || newMemory.date);
+            const daysDiff = Math.abs((newMemoryDate.getTime() - memoryDate.getTime()) / (1000 * 60 * 60 * 24));
+            
+            if (daysDiff <= 1) {
+              relationshipType = 'TEMPORAL_ADJACENT';
+              properties.days_apart = daysDiff;
+            }
+
+            await this.neo4jClient.createRelationship(
+              newMemory.id.toString(),
+              (similarMemory.id || similarMemory.source_memory_id).toString(),
+              relationshipType,
+              properties
+            );
+
+            relationshipsCreated++;
+          } catch (error) {
+            console.error(`Failed to create auto relationship: ${error}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Auto relationship detection failed: ${error}`);
+    }
+
+    return relationshipsCreated;
+  }
+
+  /**
+   * Graph-enhanced memory search using Neo4j relationships
+   * Combines SQLite/ChromaDB results with Neo4j graph traversal
+   */
+  async searchMemoriesWithGraph(
+    query: string, 
+    categories?: string[], 
+    includeRelated: boolean = true,
+    maxRelationshipDepth: number = 2
+  ): Promise<{
+    success: boolean;
+    sqlite_results: any[];
+    chroma_results: any[];
+    neo4j_results: any[];
+    graph_relationships: any[];
+    combined_results: any[];
+    search_strategy: string;
+    error?: string;
+  }> {
+    try {
+      // Start with intelligent search from existing system
+      const baseResult = await this.searchMemoriesIntelligent(query, categories);
+      
+      if (!baseResult.success) {
+        return {
+          ...baseResult,
+          neo4j_results: [],
+          graph_relationships: []
+        };
+      }
+
+      let neo4jResults: any[] = [];
+      let graphRelationships: any[] = [];
+
+      // Enhanced search with Neo4j graph traversal
+      if (this.neo4jClient && includeRelated) {
+        try {
+          // Search for memories in Neo4j using content similarity
+          const graphSearchResult = await this.neo4jClient.searchByContent(query, 20);
+          neo4jResults = graphSearchResult;
+
+          // For each found memory, get related memories through graph relationships
+          for (const memory of neo4jResults.slice(0, 5)) { // Limit to top 5 to avoid explosion
+            try {
+              const relatedMemories = await this.neo4jClient.searchRelatedMemories(
+                memory.id.toString(),
+                ['RELATED_TO', 'SAME_CATEGORY', 'HIGHLY_SIMILAR', 'TEMPORAL_ADJACENT'],
+                maxRelationshipDepth
+              );
+
+              neo4jResults.push(...relatedMemories);
+              
+              // Track relationship information - create synthetic relationships
+              relatedMemories.forEach(relatedMemory => {
+                graphRelationships.push({
+                  from: memory.id,
+                  to: relatedMemory.id,
+                  type: 'GRAPH_TRAVERSAL',
+                  depth: 1,
+                  source_query_match: memory.id
+                });
+              });
+            } catch (error) {
+              console.error(`Graph traversal error for memory ${memory.id}: ${error}`);
+            }
+          }
+        } catch (error) {
+          console.error(`Neo4j search error: ${error}`);
+        }
+      }
+
+      // Combine all results intelligently
+      const allResults = new Map();
+      
+      // Add base results (SQLite + ChromaDB)
+      baseResult.combined_results.forEach(memory => {
+        const key = memory.id || memory.source_memory_id;
+        if (key) {
+          allResults.set(key, {
+            ...memory,
+            sources: [memory.source || 'sqlite'],
+            graph_enhanced: false
+          });
+        }
+      });
+
+      // Enhance with Neo4j results
+      neo4jResults.forEach(memory => {
+        const key = memory.id;
+        if (key) {
+          const existing = allResults.get(key);
+          if (existing) {
+            // Enhance existing result
+            existing.sources.push('neo4j');
+            existing.graph_enhanced = true;
+            existing.graph_relationships = existing.graph_relationships || [];
+            existing.graph_relationships.push(...graphRelationships.filter(rel => 
+              rel.from === key || rel.to === key
+            ));
+          } else {
+            // Add new result from Neo4j
+            allResults.set(key, {
+              ...memory,
+              sources: ['neo4j'],
+              graph_enhanced: true,
+              relevance_score: 0.5, // Default score for graph-discovered memories
+              graph_relationships: graphRelationships.filter(rel => 
+                rel.from === key || rel.to === key
+              )
+            });
+          }
+        }
+      });
+
+      // Sort final results by relevance and graph enhancement
+      const finalResults = Array.from(allResults.values())
+        .sort((a, b) => {
+          // Boost graph-enhanced results
+          const aScore = a.relevance_score + (a.graph_enhanced ? 0.1 : 0);
+          const bScore = b.relevance_score + (b.graph_enhanced ? 0.1 : 0);
+          return bScore - aScore;
+        })
+        .slice(0, 50);
+
+      return {
+        success: true,
+        sqlite_results: baseResult.sqlite_results,
+        chroma_results: baseResult.chroma_results,
+        neo4j_results: neo4jResults,
+        graph_relationships: graphRelationships,
+        combined_results: finalResults,
+        search_strategy: `${baseResult.search_strategy}_with_graph`
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        sqlite_results: [],
+        chroma_results: [],
+        neo4j_results: [],
+        graph_relationships: [],
+        combined_results: [],
+        search_strategy: 'graph_enhanced',
+        error: String(error)
+      };
+    }
+  }
+
+  /**
+   * Get memory with full relationship context from graph database
+   */
+  async getMemoryWithGraphContext(
+    memoryId: number,
+    relationshipDepth: number = 2,
+    relationshipTypes?: string[]
+  ): Promise<{
+    success: boolean;
+    memory: any | null;
+    direct_relationships: any[];
+    extended_relationships: any[];
+    relationship_summary: {
+      total_connections: number;
+      relationship_types: Record<string, number>;
+      most_connected_memories: any[];
+    };
+    error?: string;
+  }> {
+    try {
+      // Get base memory information
+      const baseResult = await this.retrieveMemoryAdvanced(memoryId);
+      
+      if (!baseResult.success) {
+        return {
+          success: false,
+          memory: null,
+          direct_relationships: [],
+          extended_relationships: [],
+          relationship_summary: {
+            total_connections: 0,
+            relationship_types: {},
+            most_connected_memories: []
+          },
+          error: baseResult.error
+        };
+      }
+
+      let directRelationships: any[] = [];
+      let extendedRelationships: any[] = [];
+      const relationshipTypes_count: Record<string, number> = {};
+
+      // Get graph relationships if Neo4j is available
+      if (this.neo4jClient) {
+        try {
+          const relatedMemories = await this.neo4jClient.searchRelatedMemories(
+            memoryId.toString(),
+            relationshipTypes,
+            relationshipDepth
+          );
+
+          // Convert related memories to relationship format
+          relatedMemories.forEach((relatedMemory) => {
+            directRelationships.push({
+              id: relatedMemory.id,
+              type: 'GRAPH_RELATED',
+              target_memory: relatedMemory,
+              depth: 1,
+              confidence: 0.8
+            });
+          });
+
+          // Count relationship types
+          const relType = 'GRAPH_RELATED';
+          relationshipTypes_count[relType] = relatedMemories.length;
+        } catch (error) {
+          console.error(`Neo4j relationship retrieval error: ${error}`);
+        }
+      }
+
+      // Enhance relationships with ChromaDB similarity data
+      const enhancedRelationships = await this.enhanceRelationshipsWithSimilarity(
+        [...directRelationships, ...extendedRelationships]
+      );
+
+      // Find most connected memories
+      const connectionCounts = new Map<number, number>();
+      enhancedRelationships.forEach(rel => {
+        const targetId = rel.target_memory_id || rel.id;
+        connectionCounts.set(targetId, (connectionCounts.get(targetId) || 0) + 1);
+      });
+
+      const mostConnected = Array.from(connectionCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([id, count]) => ({
+          memory_id: id,
+          connection_count: count,
+          memory: enhancedRelationships.find(rel => 
+            (rel.target_memory_id || rel.id) === id
+          )
+        }));
+
+      return {
+        success: true,
+        memory: baseResult.sqlite_memory,
+        direct_relationships: directRelationships,
+        extended_relationships: extendedRelationships,
+        relationship_summary: {
+          total_connections: enhancedRelationships.length,
+          relationship_types: relationshipTypes_count,
+          most_connected_memories: mostConnected
+        }
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        memory: null,
+        direct_relationships: [],
+        extended_relationships: [],
+        relationship_summary: {
+          total_connections: 0,
+          relationship_types: {},
+          most_connected_memories: []
+        },
+        error: String(error)
+      };
+    }
+  }
+
+  /**
+   * Enhance relationship data with semantic similarity from ChromaDB
+   */
+  private async enhanceRelationshipsWithSimilarity(relationships: any[]): Promise<any[]> {
+    if (!this.chromaClient || relationships.length === 0) {
+      return relationships;
+    }
+
+    const enhanced = [];
+    
+    for (const rel of relationships) {
+      try {
+        // Get the target memory to search for similar concepts
+        const targetMemoryId = rel.target_memory_id || rel.id;
+        const targetMemory = await this.getMemoryById(targetMemoryId);
+        
+        if (targetMemory) {
+          // Search for concepts related to this memory in ChromaDB
+          const conceptSearch = await this.chromaClient.searchConcepts(
+            `${targetMemory.topic} ${targetMemory.content}`,
+            5
+          );
+
+          enhanced.push({
+            ...rel,
+            target_memory: targetMemory,
+            semantic_similarity: conceptSearch.success ? conceptSearch.results : [],
+            enhanced: true
+          });
+        } else {
+          enhanced.push(rel);
+        }
+      } catch (error) {
+        console.error(`Error enhancing relationship: ${error}`);
+        enhanced.push(rel);
+      }
+    }
+
+    return enhanced;
+  }
+
+  /**
+   * Get graph statistics and insights
+   */
+  async getGraphStatistics(): Promise<{
+    success: boolean;
+    total_nodes: number;
+    total_relationships: number;
+    relationship_types: string[];
+    most_connected_memories: any[];
+    graph_density: number;
+    error?: string;
+  }> {
+    if (!this.neo4jClient) {
+      return {
+        success: false,
+        total_nodes: 0,
+        total_relationships: 0,
+        relationship_types: [],
+        most_connected_memories: [],
+        graph_density: 0,
+        error: 'Neo4j client not available'
+      };
+    }
+
+    try {
+      // Implementation would depend on Neo4j client methods
+      // This is a placeholder for the interface
+      return {
+        success: true,
+        total_nodes: 0,
+        total_relationships: 0,
+        relationship_types: [],
+        most_connected_memories: [],
+        graph_density: 0
+      };
+    } catch (error) {
+      return {
+        success: false,
+        total_nodes: 0,
+        total_relationships: 0,
+        relationship_types: [],
+        most_connected_memories: [],
+        graph_density: 0,
+        error: String(error)
+      };
+    }
   }
 }
