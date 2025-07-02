@@ -17,6 +17,7 @@ interface SemanticAnalyzer {
 // Forward declaration - ChromaDBClient wird später importiert
 interface ChromaDBClient {
   storeConcepts(memory: any, concepts: any[]): Promise<{ success: boolean; stored: number; errors: string[] }>;
+  searchConcepts(query: string, limit?: number, filter?: any): Promise<any>;
 }
 
 // SQLite Database Helper mit Job-Management
@@ -154,6 +155,7 @@ export class MemoryDatabase {
       });
     });
   }
+
   // NEW: Advanced save with semantic analysis and significance evaluation
   async saveNewMemoryAdvanced(category: string, topic: string, content: string): Promise<{
     success?: boolean;
@@ -277,6 +279,7 @@ export class MemoryDatabase {
     };
     return mapping[memoryType] || 'kernerinnerungen';
   }
+  
   async searchMemories(query: string, categories?: string[]): Promise<any[]> {
     return new Promise((resolve, reject) => {
       let sql = `SELECT id, date, category, topic, content, created_at FROM memories WHERE (topic LIKE ? OR content LIKE ?)`;
@@ -294,6 +297,170 @@ export class MemoryDatabase {
         else resolve(rows || []);
       });
     });
+  }
+
+  async searchMemoriesAdvanced(query: string, categories?: string[]): Promise<{
+    success: boolean;
+    sqlite_results: any[];
+    chroma_results: any[];
+    combined_results: any[];
+    error?: string;
+  }> {
+    try {
+      const result = {
+        success: true,
+        sqlite_results: [] as any[],
+        chroma_results: [] as any[],
+        combined_results: [] as any[]
+      };
+
+      // Step 1: Retrieve memories from SQLite
+      const sqliteResults = await new Promise<any[]>((resolve, reject) => {
+        let sql = `SELECT id, date, category, topic, content, created_at FROM memories WHERE (topic LIKE ? OR content LIKE ?)`;
+        let params = [`%${query}%`, `%${query}%`];
+        
+        if (categories && categories.length > 0) {
+          const placeholders = categories.map(() => '?').join(',');
+          sql += ` AND category IN (${placeholders})`;
+          params.push(...categories);
+        }
+        
+        sql += ' ORDER BY created_at DESC LIMIT 100';
+        this.db.all(sql, params, (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        });
+      });
+
+      result.sqlite_results = sqliteResults;
+
+      // Step 2: Retrieve concepts from ChromaDB (independent of SQLite results)
+      if (this.chromaClient) {
+        try {
+          // Build ChromaDB filter based on categories
+          let chromaFilter = undefined;
+          if (categories && categories.length > 0) {
+            chromaFilter = {
+              "$or": categories.map(cat => ({ "source_category": { "$eq": cat } }))
+            };
+          }
+
+          const chromaResults = await this.chromaClient.searchConcepts(query, 50, chromaFilter);
+          
+          if (chromaResults.success) {
+            // Transform ChromaDB results to match SQLite format
+            const transformedResults = chromaResults.results.map((doc: string, index: number) => {
+              const metadata = chromaResults.metadatas[index] || {};
+              const distance = chromaResults.distances ? chromaResults.distances[index] : 0;
+              
+              return {
+                id: `chroma_${chromaResults.ids[index]}`,
+                source: 'chroma',
+                content: doc,
+                distance: distance,
+                similarity: 1 - distance, // Convert distance to similarity
+                metadata: metadata,
+                source_memory_id: metadata.source_memory_id,
+                source_category: metadata.source_category || 'unknown',
+                source_topic: metadata.source_topic || 'Concept',
+                source_date: metadata.source_date || metadata.created_at,
+                created_at: metadata.source_created_at || metadata.created_at,
+                // Reconstruct memory-like structure for concepts without SQLite counterpart
+                topic: metadata.source_topic || `Concept: ${doc.substring(0, 50)}...`,
+                category: metadata.source_category || 'unknown',
+                date: metadata.source_date || metadata.created_at
+              };
+            });
+            
+            result.chroma_results = transformedResults;
+          } else {
+            console.error(`ChromaDB search failed: ${chromaResults.error}`);
+          }
+        } catch (error) {
+          console.error(`ChromaDB search error: ${error}`);
+        }
+      }
+
+      // Step 3: Combine and deduplicate results from SQLite and ChromaDB
+      const combinedMap = new Map();
+      
+      // Add SQLite results (higher priority for exact matches)
+      sqliteResults.forEach(memory => {
+        combinedMap.set(`sqlite_${memory.id}`, {
+          ...memory,
+          source: 'sqlite',
+          relevance_score: this.calculateTextRelevance(query, memory)
+        });
+      });
+      
+      // Add ChromaDB results with smart deduplication
+      result.chroma_results.forEach(chromaResult => {
+        const sourceMemoryId = chromaResult.source_memory_id;
+        
+        if (sourceMemoryId) {
+          // This concept comes from a specific memory
+          const sqliteKey = `sqlite_${sourceMemoryId}`;
+          const chromaKey = `chroma_${sourceMemoryId}`;
+          
+          if (combinedMap.has(sqliteKey)) {
+            // Memory exists in SQLite - enhance it with ChromaDB data
+            const existingMemory = combinedMap.get(sqliteKey);
+            existingMemory.chroma_concepts = existingMemory.chroma_concepts || [];
+            existingMemory.chroma_concepts.push({
+              content: chromaResult.content,
+              similarity: chromaResult.similarity,
+              distance: chromaResult.distance
+            });
+            // Update relevance score if ChromaDB similarity is higher
+            if (chromaResult.similarity > existingMemory.relevance_score) {
+              existingMemory.relevance_score = chromaResult.similarity;
+              existingMemory.best_match_source = 'chroma';
+            }
+          } else if (!combinedMap.has(chromaKey)) {
+            // Memory not in SQLite but concept exists - add as ChromaDB result
+            combinedMap.set(chromaKey, {
+              ...chromaResult,
+              relevance_score: chromaResult.similarity || 0.5,
+              best_match_source: 'chroma'
+            });
+          }
+        } else {
+          // Concept without specific source memory ID - add as standalone concept
+          const conceptKey = `chroma_concept_${chromaResult.id}`;
+          if (!combinedMap.has(conceptKey)) {
+            combinedMap.set(conceptKey, {
+              ...chromaResult,
+              relevance_score: chromaResult.similarity || 0.5,
+              best_match_source: 'chroma',
+              is_concept_only: true
+            });
+          }
+        }
+      });
+      
+      // Sort combined results by relevance (prioritize ChromaDB semantic similarity over text matching)
+      result.combined_results = Array.from(combinedMap.values())
+        .sort((a, b) => {
+          // Prioritize results with ChromaDB concepts
+          if (a.best_match_source === 'chroma' && b.best_match_source !== 'chroma') return -1;
+          if (b.best_match_source === 'chroma' && a.best_match_source !== 'chroma') return 1;
+          
+          // Then sort by relevance score
+          return (b.relevance_score || 0) - (a.relevance_score || 0);
+        })
+        .slice(0, 50); // Limit to top 50 results
+
+      return result;
+
+    } catch (error) {
+      return {
+        success: false,
+        sqlite_results: [],
+        chroma_results: [],
+        combined_results: [],
+        error: String(error)
+      };
+    }
   }
 
   async getRecentMemories(limit: number = 10): Promise<any[]> {
@@ -357,6 +524,7 @@ export class MemoryDatabase {
       });
     });
   }
+
   // Analysis Job Management Methods
   async createAnalysisJob(memoryIds: number[], jobType: string = 'batch'): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -468,5 +636,395 @@ export class MemoryDatabase {
   
   close() {
     this.db.close();
+  }
+
+  // Helper method to calculate text relevance score
+  private calculateTextRelevance(query: string, memory: any): number {
+    const lowerQuery = query.toLowerCase();
+    const lowerTopic = (memory.topic || '').toLowerCase();
+    const lowerContent = (memory.content || '').toLowerCase();
+    
+    let score = 0;
+    
+    // Exact matches get highest score
+    if (lowerTopic.includes(lowerQuery)) score += 1.0;
+    if (lowerContent.includes(lowerQuery)) score += 0.8;
+    
+    // Word matches get partial score
+    const queryWords = lowerQuery.split(/\s+/).filter(word => word.length > 2);
+    queryWords.forEach(word => {
+      if (lowerTopic.includes(word)) score += 0.3;
+      if (lowerContent.includes(word)) score += 0.2;
+    });
+    
+    // Normalize score to 0-1 range
+    return Math.min(score, 1.0);
+  }
+
+  async retrieveMemoryAdvanced(memoryId: number): Promise<{
+    success: boolean;
+    sqlite_memory: any | null;
+    related_concepts: any[];
+    related_memories: any[];
+    error?: string;
+  }> {
+    try {
+      const result = {
+        success: true,
+        sqlite_memory: null as any,
+        related_concepts: [] as any[],
+        related_memories: [] as any[]
+      };
+
+      // Step 1: Retrieve the specific memory from SQLite
+      const sqliteMemory = await this.getMemoryById(memoryId);
+      if (!sqliteMemory) {
+        return {
+          success: false,
+          sqlite_memory: null,
+          related_concepts: [],
+          related_memories: [],
+          error: `Memory with ID ${memoryId} not found in SQLite`
+        };
+      }
+
+      result.sqlite_memory = sqliteMemory;
+
+      // Step 2: Search for related concepts in ChromaDB using the memory's content and topic
+      if (this.chromaClient) {
+        try {
+          // Create search query from memory content and topic
+          const searchQuery = `${sqliteMemory.topic} ${sqliteMemory.content}`;
+          
+          // Search for related concepts in ChromaDB
+          const chromaResults = await this.chromaClient.searchConcepts(searchQuery, 20);
+          
+          if (chromaResults.success) {
+            // Transform ChromaDB results
+            const transformedConcepts = chromaResults.results.map((doc: string, index: number) => {
+              const metadata = chromaResults.metadatas[index] || {};
+              const distance = chromaResults.distances ? chromaResults.distances[index] : 0;
+              
+              return {
+                id: chromaResults.ids[index],
+                content: doc,
+                distance: distance,
+                similarity: 1 - distance,
+                metadata: metadata,
+                source_memory_id: metadata.source_memory_id,
+                source_category: metadata.source_category,
+                source_topic: metadata.source_topic,
+                source_date: metadata.source_date
+              };
+            });
+
+            result.related_concepts = transformedConcepts;
+
+            // Step 3: Find related memories in SQLite based on ChromaDB results
+            const relatedMemoryIds = new Set<number>();
+            transformedConcepts.forEach((concept: any) => {
+              if (concept.source_memory_id && concept.source_memory_id !== memoryId) {
+                relatedMemoryIds.add(concept.source_memory_id);
+              }
+            });
+
+            if (relatedMemoryIds.size > 0) {
+              const relatedMemories = await Promise.all(
+                Array.from(relatedMemoryIds).map(async (id) => {
+                  try {
+                    const memory = await this.getMemoryById(id);
+                    if (memory) {
+                      // Calculate relevance score based on ChromaDB similarity
+                      const relevantConcepts = transformedConcepts.filter((c: any) => c.source_memory_id === id);
+                      const maxSimilarity = Math.max(...relevantConcepts.map((c: any) => c.similarity));
+                      
+                      return {
+                        ...memory,
+                        relevance_score: maxSimilarity,
+                        related_concepts_count: relevantConcepts.length
+                      };
+                    }
+                    return null;
+                  } catch (error) {
+                    console.error(`Error fetching related memory ${id}:`, error);
+                    return null;
+                  }
+                })
+              );
+
+              // Filter out null results and sort by relevance
+              result.related_memories = relatedMemories
+                .filter(memory => memory !== null)
+                .sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0))
+                .slice(0, 10); // Limit to top 10 related memories
+            }
+
+          } else {
+            console.error(`ChromaDB search failed: ${chromaResults.error}`);
+          }
+        } catch (error) {
+          console.error(`ChromaDB search error: ${error}`);
+        }
+      }
+
+      return result;
+
+    } catch (error) {
+      return {
+        success: false,
+        sqlite_memory: null,
+        related_concepts: [],
+        related_memories: [],
+        error: String(error)
+      };
+    }
+  }
+
+  /**
+   * Quick retrieve method for getting a memory with basic related information
+   * This is a simplified version of retrieveMemoryAdvanced for common use cases
+   */
+  async retrieveMemoryWithRelated(memoryId: number, includeRelated: boolean = true): Promise<{
+    memory: any | null;
+    related: any[];
+    error?: string;
+  }> {
+    try {
+      if (!includeRelated) {
+        const memory = await this.getMemoryById(memoryId);
+        return {
+          memory,
+          related: []
+        };
+      }
+
+      const result = await this.retrieveMemoryAdvanced(memoryId);
+      if (!result.success) {
+        return {
+          memory: null,
+          related: [],
+          error: result.error
+        };
+      }
+
+      return {
+        memory: result.sqlite_memory,
+        related: result.related_memories
+      };
+
+    } catch (error) {
+      return {
+        memory: null,
+        related: [],
+        error: String(error)
+      };
+    }
+  }
+
+  /**
+   * Search only in ChromaDB - useful when SQLite has few or no results
+   * This method reconstructs memory-like objects from ChromaDB concepts
+   */
+  async searchConceptsOnly(query: string, categories?: string[], limit: number = 20): Promise<{
+    success: boolean;
+    results: any[];
+    error?: string;
+  }> {
+    try {
+      if (!this.chromaClient) {
+        return {
+          success: false,
+          results: [],
+          error: 'ChromaDB client not available'
+        };
+      }
+
+      // Build ChromaDB filter based on categories
+      let chromaFilter = undefined;
+      if (categories && categories.length > 0) {
+        chromaFilter = {
+          "$or": categories.map(cat => ({ "source_category": { "$eq": cat } }))
+        };
+      }
+
+      const chromaResults = await this.chromaClient.searchConcepts(query, limit, chromaFilter);
+      
+      if (!chromaResults.success) {
+        return {
+          success: false,
+          results: [],
+          error: chromaResults.error
+        };
+      }
+
+      // Transform ChromaDB results to memory-like objects
+      const transformedResults = chromaResults.results.map((doc: string, index: number) => {
+        const metadata = chromaResults.metadatas[index] || {};
+        const distance = chromaResults.distances ? chromaResults.distances[index] : 0;
+        const similarity = 1 - distance;
+        
+        return {
+          id: `concept_${chromaResults.ids[index]}`,
+          source: 'chroma_only',
+          content: doc,
+          distance: distance,
+          similarity: similarity,
+          relevance_score: similarity,
+          
+          // Memory-like fields reconstructed from metadata
+          topic: metadata.source_topic || `Concept: ${doc.substring(0, 50)}${doc.length > 50 ? '...' : ''}`,
+          category: metadata.source_category || 'unknown',
+          date: metadata.source_date || metadata.created_at || new Date().toISOString().split('T')[0],
+          created_at: metadata.source_created_at || metadata.created_at || new Date().toISOString(),
+          
+          // Additional ChromaDB specific info
+          original_memory_id: metadata.source_memory_id,
+          concept_metadata: metadata,
+          is_concept_reconstruction: true
+        };
+      });
+
+      return {
+        success: true,
+        results: transformedResults.sort((a: any, b: any) => b.similarity - a.similarity)
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        results: [],
+        error: String(error)
+      };
+    }
+  }
+
+  /**
+   * Intelligent search that adapts based on SQLite results
+   * Falls back to ChromaDB-only search if SQLite returns no results
+   */
+  async searchMemoriesIntelligent(query: string, categories?: string[]): Promise<{
+    success: boolean;
+    sqlite_results: any[];
+    chroma_results: any[];
+    combined_results: any[];
+    search_strategy: 'hybrid' | 'chroma_only';
+    error?: string;
+  }> {
+    try {
+      // First, try the standard advanced search
+      const advancedResult = await this.searchMemoriesAdvanced(query, categories);
+      
+      if (!advancedResult.success) {
+        return {
+          ...advancedResult,
+          search_strategy: 'hybrid'
+        };
+      }
+
+      // If SQLite has results, return the hybrid results
+      if (advancedResult.sqlite_results.length > 0) {
+        return {
+          ...advancedResult,
+          search_strategy: 'hybrid'
+        };
+      }
+
+      // If SQLite is empty, enhance with ChromaDB-only search
+      console.log('📊 SQLite returned no results, performing enhanced ChromaDB search...');
+      
+      const chromaOnlyResult = await this.searchConceptsOnly(query, categories, 30);
+      
+      if (chromaOnlyResult.success) {
+        // Combine existing ChromaDB results with the enhanced search
+        const enhancedChromaResults = [
+          ...advancedResult.chroma_results,
+          ...chromaOnlyResult.results.filter(newResult => 
+            !advancedResult.chroma_results.some(existing => 
+              existing.id === newResult.id || 
+              existing.content === newResult.content
+            )
+          )
+        ];
+
+        return {
+          success: true,
+          sqlite_results: [],
+          chroma_results: enhancedChromaResults,
+          combined_results: enhancedChromaResults
+            .sort((a: any, b: any) => (b.relevance_score || 0) - (a.relevance_score || 0))
+            .slice(0, 50),
+          search_strategy: 'chroma_only'
+        };
+      }
+
+      // Fallback to original results if ChromaDB-only search fails
+      return {
+        ...advancedResult,
+        search_strategy: 'hybrid'
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        sqlite_results: [],
+        chroma_results: [],
+        combined_results: [],
+        search_strategy: 'hybrid',
+        error: String(error)
+      };
+    }
+  }
+
+  /**
+   * Detailed search that explains the search strategy used
+   * Shows whether results come from metadata filtering, semantic similarity, or both
+   */
+  async searchMemoriesWithExplanation(query: string, categories?: string[]): Promise<{
+    success: boolean;
+    search_explanation: {
+      sqlite_strategy: string;
+      chroma_strategy: string;
+      metadata_filters_applied: boolean;
+      semantic_search_performed: boolean;
+    };
+    sqlite_results: any[];
+    chroma_results: any[];
+    combined_results: any[];
+    error?: string;
+  }> {
+    try {
+      const result = await this.searchMemoriesAdvanced(query, categories);
+      
+      const explanation = {
+        sqlite_strategy: "Full-text search in topic and content fields",
+        chroma_strategy: "Semantic vector similarity search using embeddings",
+        metadata_filters_applied: categories ? categories.length > 0 : false,
+        semantic_search_performed: this.chromaClient !== null
+      };
+
+      if (categories && categories.length > 0) {
+        explanation.chroma_strategy += ` with metadata filtering on categories: [${categories.join(', ')}]`;
+      }
+
+      return {
+        ...result,
+        search_explanation: explanation
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        search_explanation: {
+          sqlite_strategy: "Full-text search (failed)",
+          chroma_strategy: "Semantic search (failed)", 
+          metadata_filters_applied: false,
+          semantic_search_performed: false
+        },
+        sqlite_results: [],
+        chroma_results: [],
+        combined_results: [],
+        error: String(error)
+      };
+    }
   }
 }

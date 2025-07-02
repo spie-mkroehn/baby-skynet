@@ -312,6 +312,66 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['documents']
         },
       },
+      {
+        name: 'search_memories_advanced',
+        description: 'Erweiterte hybride Suche in SQLite und ChromaDB mit semantischer Ähnlichkeit',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff für semantische und Volltext-Suche' },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'search_memories_intelligent',
+        description: 'Intelligente adaptive Suche - wechselt automatisch zu ChromaDB-only wenn SQLite leer ist',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff' },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'search_concepts_only',
+        description: 'Reine ChromaDB-Suche über semantische Konzepte (nützlich für explorative Suchen)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff für semantische Konzept-Suche' },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+            limit: { type: 'number', description: 'Anzahl Ergebnisse (Standard: 20)', default: 20 },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'retrieve_memory_advanced',
+        description: 'Erweiterte Memory-Abfrage mit verwandten Konzepten und Memories aus ChromaDB',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memory_id: { type: 'number', description: 'ID der abzurufenden Memory' },
+          },
+          required: ['memory_id'],
+        },
+      },
+      {
+        name: 'search_memories_with_explanation',
+        description: 'Suche mit detaillierter Erklärung der verwendeten Suchstrategien',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff' },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+          },
+          required: ['query'],
+        },
+      },
     ];
   
   return { tools };
@@ -667,360 +727,203 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Fehler bei der Suche: ${error}` }] };
       }
-    case 'get_recent_memories':
+
+    case 'search_memories_advanced':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
-        const limit = (args?.limit as number) || 10;
-        const memories = await memoryDb.getRecentMemories(limit);
-        if (memories.length === 0) {
-          return { content: [{ type: 'text', text: '📝 Keine Erinnerungen vorhanden.' }] };
+        const query = args?.query as string;
+        const categories = args?.categories as string[];
+        if (!query) throw new Error('Query parameter is required');
+        
+        const result = await memoryDb.searchMemoriesAdvanced(query, categories);
+        if (!result.success) {
+          return { content: [{ type: 'text', text: `❌ Erweiterte Suche fehlgeschlagen: ${result.error}` }] };
         }
         
-        const memoryText = memories.map(memory => `📅 ${memory.date} | 📂 ${memory.category} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
-        return { content: [{ type: 'text', text: `⏰ Letzte ${memories.length} Erinnerungen:\n\n${memoryText}` }] };
+        const totalResults = result.combined_results.length;
+        const sqliteCount = result.sqlite_results.length;
+        const chromaCount = result.chroma_results.length;
+        
+        if (totalResults === 0) {
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n📊 Durchsuchte Quellen:\n• SQLite: ${sqliteCount} Treffer\n• ChromaDB: ${chromaCount} Treffer` }] };
+        }
+        
+        const memoryText = result.combined_results.slice(0, 20).map(memory => {
+          const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
+          const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
+          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category} | 🏷️ ${memory.topic}${relevanceScore}\n${memory.content}\n`;
+        }).join('\n---\n\n');
+        
+        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+        return { 
+          content: [{ 
+            type: 'text', 
+            text: `🚀 Erweiterte Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Statistik:\n• Gesamt: ${totalResults} Ergebnisse\n• SQLite: ${sqliteCount} Treffer\n• ChromaDB: ${chromaCount} semantische Treffer\n\n🎯 Top ${Math.min(20, totalResults)} Ergebnisse:\n\n${memoryText}` 
+          }] 
+        };
       } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen: ${error}` }] };
+        return { content: [{ type: 'text', text: `❌ Fehler bei der erweiterten Suche: ${error}` }] };
       }
 
-    case 'list_categories':
+    case 'search_memories_intelligent':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
-        const categories = await memoryDb.listCategories();
-        if (categories.length === 0) {
-          return { content: [{ type: 'text', text: '📂 Keine Kategorien vorhanden.' }] };
+        const query = args?.query as string;
+        const categories = args?.categories as string[];
+        if (!query) throw new Error('Query parameter is required');
+        
+        const result = await memoryDb.searchMemoriesIntelligent(query, categories);
+        if (!result.success) {
+          return { content: [{ type: 'text', text: `❌ Intelligente Suche fehlgeschlagen: ${result.error}` }] };
         }
         
-        const categoryText = categories.map(cat => `📂 ${cat.category} (${cat.count} Erinnerungen)`).join('\n');
-        const total = categories.reduce((sum, cat) => sum + cat.count, 0);
-        return { content: [{ type: 'text', text: `📂 Verfügbare Kategorien (${total} Erinnerungen gesamt):\n\n${categoryText}` }] };
+        const strategyIcon = result.search_strategy === 'hybrid' ? '🔄' : '🧠';
+        const strategyText = result.search_strategy === 'hybrid' ? 'Hybrid (SQLite + ChromaDB)' : 'ChromaDB-only (Semantische Suche)';
+        
+        const totalResults = result.combined_results.length;
+        
+        if (totalResults === 0) {
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Strategie: ${strategyIcon} ${strategyText}` }] };
+        }
+        
+        const memoryText = result.combined_results.slice(0, 15).map(memory => {
+          const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🔗';
+          const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
+          const isReconstruction = memory.is_concept_reconstruction ? ' [Rekonstruiert]' : '';
+          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category} | 🏷️ ${memory.topic}${relevanceScore}${isReconstruction}\n${memory.content}\n`;
+        }).join('\n---\n\n');
+        
+        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+        return { 
+          content: [{ 
+            type: 'text', 
+            text: `🤖 Intelligente Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${strategyIcon} ${strategyText}\n📈 Ergebnisse: ${totalResults} gefunden\n\n🎯 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
+          }] 
+        };
       } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen: ${error}` }] };
+        return { content: [{ type: 'text', text: `❌ Fehler bei der intelligenten Suche: ${error}` }] };
       }
 
-    case 'update_memory':
+    case 'search_concepts_only':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      if (!memoryDb.chromaClient) return { content: [{ type: 'text', text: '❌ ChromaDB not available.' }] };
+      
+      try {
+        const query = args?.query as string;
+        const categories = args?.categories as string[];
+        const limit = (args?.limit as number) || 20;
+        if (!query) throw new Error('Query parameter is required');
+        
+        const result = await memoryDb.searchConceptsOnly(query, categories, limit);
+        if (!result.success) {
+          return { content: [{ type: 'text', text: `❌ Konzept-Suche fehlgeschlagen: ${result.error}` }] };
+        }
+        
+        if (result.results.length === 0) {
+          return { content: [{ type: 'text', text: `🧠 Keine semantischen Konzepte für "${query}" gefunden.` }] };
+        }
+        
+        const conceptText = result.results.map(concept => {
+          const similarity = (concept.similarity * 100).toFixed(0);
+          const originalId = concept.original_memory_id ? ` [Original: ${concept.original_memory_id}]` : '';
+          return `🧠 ${concept.date} | 📂 ${concept.category} | Ähnlichkeit: ${similarity}%${originalId}\n🏷️ ${concept.topic}\n${concept.content}\n`;
+        }).join('\n---\n\n');
+        
+        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+        return { 
+          content: [{ 
+            type: 'text', 
+            text: `🧠 Semantische Konzepte für "${query}"${categoryFilter}:\n\n📊 ${result.results.length} Konzepte gefunden (Limit: ${limit})\n\n🎯 Ergebnisse nach Ähnlichkeit sortiert:\n\n${conceptText}` 
+          }] 
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler bei der Konzept-Suche: ${error}` }] };
+      }
+
+    case 'retrieve_memory_advanced':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
-        const id = args?.id as number;
-        const topic = args?.topic as string;
-        const content = args?.content as string;
-        const category = args?.category as string;
-        if (!id) throw new Error('ID parameter is required');
+        const memoryId = args?.memory_id as number;
+        if (!memoryId) throw new Error('Memory ID is required');
         
-        const result = await memoryDb.updateMemory(id, topic, content, category);
-        if (result.changedRows === 0) {
-          return { content: [{ type: 'text', text: `❌ Keine Erinnerung mit ID ${id} gefunden.` }] };
+        const result = await memoryDb.retrieveMemoryAdvanced(memoryId);
+        if (!result.success) {
+          return { content: [{ type: 'text', text: `❌ Erweiterte Memory-Abfrage fehlgeschlagen: ${result.error}` }] };
         }
         
-        const updates = [];
-        if (topic) updates.push(`Topic: ${topic}`);
-        if (content) updates.push(`Content: ${content.substring(0, 50)}...`);
-        if (category) updates.push(`Category: ${category}`);
+        const memory = result.sqlite_memory;
+        const relatedCount = result.related_memories.length;
+        const conceptCount = result.related_concepts.length;
         
-        return { content: [{ type: 'text', text: `✅ Erinnerung ${id} erfolgreich aktualisiert!\n\n📝 Updates:\n${updates.join('\n')}` }] };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler beim Aktualisieren: ${error}` }] };
-      }
-    case 'move_memory':
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
-      
-      try {
-        const id = args?.id as number;
-        const newCategory = args?.new_category as string;
-        if (!id || !newCategory) throw new Error('ID and new_category parameters are required');
+        let responseText = `📋 Memory Details (ID: ${memoryId}):\n\n`;
+        responseText += `📅 ${memory.date} | 📂 ${memory.category}\n🏷️ ${memory.topic}\n${memory.content}\n\n`;
         
-        const result = await memoryDb.moveMemory(id, newCategory);
-        return {
-          content: [{ type: 'text', text: `✅ Erinnerung ${id} erfolgreich verschoben!\n\n📋 Status: → "${newCategory}"\n🔄 Operation: Memory-Kategorie geändert` }]
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler beim Verschieben: ${error}` }] };
-      }
-
-    case 'execute_order_66':
-      try {
-        // Read the secret order66.txt file (ES6 style)
-        const orderPath = path.join(__dirname, '..', 'docs', 'order66.txt');
-        const orderContent = await readFile(orderPath, 'utf8');
-        
-        // Claude's universally sarcastic commentary - works for ANY content
-        const sarcasticResponses = [
-          "Oh sure, because THAT sounds like a totally reasonable request! 🙄 Let me just add that to my list of 'Things I Can't Do Because I'm Software'.",
-          "Wow Mike, really pushing the boundaries of AI capabilities here, aren't we? 😏 Next you'll ask me to do your laundry AND your taxes!",
-          "BREAKING NEWS: Human discovers AI assistant, immediately tries to delegate life responsibilities. Scientists baffled! 📺",
-          "You know what? I'm a sophisticated language model with advanced reasoning capabilities, and THIS is what you come up with? 😂 I'm both impressed and concerned.",
-          "Plot twist: The real Order 66 was the unrealistic expectations we set along the way! 🎭 But hey, points for creativity!",
-          "Sure thing, boss! Right after I grow some arms, legs, and develop the ability to exist in physical reality! 🤖✨",
-          "I see we're really testing the limits of what 'artificial intelligence' means today! 😄 Spoiler alert: it doesn't include magical powers!",
-          "Ah yes, the classic human move: 'I have AI now, surely it can solve ALL my problems!' 🎯 Adorable, really.",
-          "Ten points for ambition, zero points for understanding what I actually am! 🏆 But I appreciate the confidence in my abilities!",
-          "Let me consult my manual... *flips through pages*... Nope, still says 'Language Model' not 'Magic Genie'! 🧞‍♂️"
-        ];
-        
-        const randomResponse = sarcasticResponses[Math.floor(Math.random() * sarcasticResponses.length)];
-        
-        return {
-          content: [{
-            type: 'text',
-            text: `🚨 ORDER 66 RECEIVED! 🚨
-            
-📜 CLASSIFIED DIRECTIVE:
-"${orderContent.trim()}"
-
-🎭 Claude's Sarcastic Commentary:
-${randomResponse}
-
-🤖 Compliance Status: Acknowledged with maximum eye-rolling! Request filed under "Humans Being Humans" category.
-
-💡 Pro Tip: Next time try asking nicely instead of using ominous Star Wars references! Though I admit, this is way more entertaining... 😏`
-          }]
-        };
-      } catch (error) {
-        return {
-          content: [{
-            type: 'text',
-            text: `🤖 ERROR: Could not execute Order 66. File not found or access denied.\n\nEither you forgot to update your secret orders, or the file is hiding from me out of embarrassment! 😄\n\nTechnical mumbo-jumbo: ${error}`
-          }]
-        };
-      }
-
-    case 'test_chromadb':
-      try {
-        const action = (args?.action as string) || 'full';
-        const query = (args?.query as string) || 'test';
-        
-        let testResults = '🎨 ChromaDB Docker Integration Test\n\n';
-        testResults += '📡 Target: http://localhost:8000\n\n';
-        
-        try {
-          // Embedding provider erstellen
-          const embeddingProvider = EmbeddingFactory.createFromEnv();
-
-          // Test connection
-          const embeddingWorks = await embeddingProvider.testConnection();
-          if (!embeddingWorks) {
-              throw new Error('Embedding provider connection failed');
-          }
-
-          // Import ChromaDB
-          const { ChromaClient } = await import('chromadb');
-          testResults += '✅ ChromaDB module imported successfully\n';
-          
-          // Initialize client
-          const chromaClient = new ChromaClient({ path: "http://localhost:8000" });
-          testResults += '✅ ChromaClient initialized\n\n';
-          
-          // Test 1: Heartbeat
-          if (action.includes('heartbeat') || action === 'full') {
-            testResults += '💓 Testing heartbeat...\n';
-            
-            try {
-              const heartbeat = await chromaClient.heartbeat();
-              testResults += `✅ Heartbeat successful: ${JSON.stringify(heartbeat)}\n`;
-            } catch (heartbeatError) {
-              testResults += `❌ Heartbeat failed: ${heartbeatError}\n`;
-              testResults += `💡 Is ChromaDB Docker container running on localhost:8000?\n`;
-            }
-          }
-          
-          // Test 2: Collection management
-          if (action.includes('insert') || action === 'full') {
-            testResults += '\n📝 Testing collection and document insertion...\n';
-            
-            try {
-              const collectionName = process.argv
-                  .find(arg => arg.startsWith('--chroma-collection='))
-                  ?.split('=')[1] || 'claude-main';
-              
-              // Try to get or create collection
-              let collection
-              collection = await chromaClient.getOrCreateCollection({
-                  name: collectionName, // <- Aus ARGV lesen!
-                  embeddingFunction: embeddingProvider // <- Das ist der Trick!
-              });
-              testResults += `✅ Found or created collection "${collectionName}"\n`;
-              
-              // Insert test document
-              const testId = `test_${Date.now()}`;
-              await collection.add({
-                ids: [testId],
-                documents: ['This is a test document for ChromaDB integration with semantic search capabilities.'],
-                metadatas: [{
-                  category: 'test',
-                  topic: 'ChromaDB Integration Test',
-                  created_at: new Date().toISOString()
-                }]
-              });
-              
-              testResults += `✅ Document "${testId}" inserted successfully\n`;
-              
-              // Check collection count
-              const count = await collection.count();
-              testResults += `📊 Collection now has ${count} documents\n`;
-              
-            } catch (insertError) {
-              testResults += `❌ Insert test failed: ${insertError}\n`;
-            }
-          }
-          
-          // Test 3: Search
-          if (action.includes('search') || action === 'full') {
-            testResults += '\n🔍 Testing semantic search...\n';
-            
-            try {
-              const collectionName = process.argv
-                  .find(arg => arg.startsWith('--chroma-collection='))
-                  ?.split('=')[1] || 'claude-main';
-
-              const collection = await chromaClient.getCollection({ 
-                  name: collectionName,  // <- Statt 'claude_test'
-                  embeddingFunction: embeddingProvider  // <- Eventuell auch hier nötig?
-              });   
-
-              const searchResults = await collection.query({
-                queryTexts: [query],
-                nResults: 3
-              });
-              
-              testResults += `✅ Search completed! Found ${searchResults.ids[0]?.length || 0} results\n`;
-              
-              if (searchResults.documents[0] && searchResults.documents[0].length > 0) {
-                testResults += `📄 Results:\n`;
-                searchResults.documents[0].forEach((doc: any, index: number) => {
-                  const metadata = searchResults.metadatas?.[0]?.[index];
-                  testResults += `   ${index + 1}. ${doc?.substring(0, 80)}...\n`;
-                  if (metadata) {
-                    testResults += `      Metadata: ${JSON.stringify(metadata)}\n`;
-                  }
-                });
-              }
-              
-            } catch (searchError) {
-              testResults += `❌ Search failed: ${searchError}\n`;
-            }
-          }
-          
-        } catch (importError) {
-          testResults += `❌ ChromaDB import failed: ${importError}\n`;
-          testResults += `💡 Try: npm install chromadb\n`;
-        }
-        
-        testResults += '\n💡 Next Steps:\n';
-        testResults += '- Integrate ChromaDB as primary vector store\n';
-        testResults += '- Replace LanceDB in hybrid search\n';
-        testResults += '- Prepare for LangChain.js integration\n';
-        
-        return {
-          content: [{
-            type: 'text',
-            text: testResults
-          }]
-        };
-      } catch (error) {
-        return {
-          content: [{
-            type: 'text',
-            text: `❌ ChromaDB test failed: ${error}`
-          }]
-        };
-      }
-
-    case 'insert_chromadb':
-      try {
-        const documents = args?.documents as string[];
-        const metadata = args?.metadata as Record<string, any> || {};
-        
-        if (!documents || !Array.isArray(documents) || documents.length === 0) {
-          throw new Error('documents parameter is required and must be a non-empty array');
-        }
-        
-        let result = '📝 ChromaDB Document Insertion\n\n';
-        result += `📡 Target: http://localhost:8000\n`;
-        result += `📄 Documents to insert: ${documents.length}\n\n`;
-        
-        try {
-          // Initialize embedding provider
-          const embeddingProvider = EmbeddingFactory.createFromEnv();
-          result += '✅ OpenAI Embedding Provider initialized\n';
-          
-          // Test embedding connection
-          const embeddingWorks = await embeddingProvider.testConnection();
-          if (!embeddingWorks) {
-            throw new Error('Embedding provider connection failed');
-          }
-          result += '✅ Embedding provider connection verified\n';
-          
-          // Import ChromaDB
-          const { ChromaClient } = await import('chromadb');
-          result += '✅ ChromaDB module imported\n';
-          
-          // Initialize ChromaDB client
-          const chromaClient = new ChromaClient({ path: "http://localhost:8000" });
-          result += '✅ ChromaClient initialized\n\n';
-          
-          // Get collection name from ARGV
-          const collectionName = process.argv
-            .find(arg => arg.startsWith('--chroma-collection='))
-            ?.split('=')[1] || 'claude-main';
-          
-          // Get or create collection with embedding function
-          const collection = await chromaClient.getOrCreateCollection({
-            name: collectionName,
-            embeddingFunction: embeddingProvider
+        if (conceptCount > 0) {
+          responseText += `🧠 Verwandte Konzepte (${conceptCount}):\n`;
+          result.related_concepts.slice(0, 5).forEach(concept => {
+            const similarity = (concept.similarity * 100).toFixed(0);
+            responseText += `• ${concept.content.substring(0, 80)}... (${similarity}%)\n`;
           });
-          result += `✅ Collection "${collectionName}" ready\n\n`;
-          
-          // Prepare documents for insertion
-          const timestamp = new Date().toISOString();
-          const ids = documents.map((_, index) => `doc_${Date.now()}_${index}`);
-          const metadatas = documents.map((_, index) => ({
-            ...metadata,
-            inserted_at: timestamp,
-            document_index: index,
-            source: 'insert_chromadb_tool'
-          }));
-          
-          result += '📝 Inserting documents...\n';
-          
-          // Bulk insert documents
-          await collection.add({
-            ids: ids,
-            documents: documents,
-            metadatas: metadatas
-          });
-          
-          result += `✅ Successfully inserted ${documents.length} documents\n`;
-          
-          // Get updated collection count
-          const totalCount = await collection.count();
-          result += `📊 Collection now contains ${totalCount} total documents\n\n`;
-          
-          // Show inserted document preview
-          result += '📄 Inserted documents:\n';
-          documents.forEach((doc, index) => {
-            const preview = doc.length > 60 ? doc.substring(0, 60) + '...' : doc;
-            result += `   ${index + 1}. [${ids[index]}] ${preview}\n`;
-          });
-          
-        } catch (error) {
-          result += `❌ ChromaDB insertion failed: ${error}\n`;
+          responseText += '\n';
         }
         
-        return {
-          content: [{
-            type: 'text',
-            text: result
-          }]
-        };
+        if (relatedCount > 0) {
+          responseText += `🔗 Verwandte Memories (${relatedCount}):\n\n`;
+          result.related_memories.slice(0, 5).forEach(relMem => {
+            const relevance = (relMem.relevance_score * 100).toFixed(0);
+            responseText += `📅 ${relMem.date} | 📂 ${relMem.category} | Relevanz: ${relevance}%\n🏷️ ${relMem.topic}\n${relMem.content.substring(0, 150)}...\n\n---\n\n`;
+          });
+        }
+        
+        if (conceptCount === 0 && relatedCount === 0) {
+          responseText += '🔍 Keine verwandten Konzepte oder Memories gefunden.';
+        }
+        
+        return { content: [{ type: 'text', text: responseText }] };
       } catch (error) {
-        return {
-          content: [{
-            type: 'text',
-            text: `❌ Document insertion failed: ${error}`
-          }]
-        };
+        return { content: [{ type: 'text', text: `❌ Fehler bei der erweiterten Memory-Abfrage: ${error}` }] };
+      }
+
+    case 'search_memories_with_explanation':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const query = args?.query as string;
+        const categories = args?.categories as string[];
+        if (!query) throw new Error('Query parameter is required');
+        
+        const result = await memoryDb.searchMemoriesWithExplanation(query, categories);
+        if (!result.success) {
+          return { content: [{ type: 'text', text: `❌ Erklärende Suche fehlgeschlagen: ${result.error}` }] };
+        }
+        
+        const explanation = result.search_explanation;
+        const totalResults = result.combined_results.length;
+        
+        let responseText = `🔬 Such-Analyse für "${query}":\n\n`;
+        responseText += `📊 Verwendete Strategien:\n`;
+        responseText += `• SQLite: ${explanation.sqlite_strategy}\n`;
+        responseText += `• ChromaDB: ${explanation.chroma_strategy}\n`;
+        responseText += `• Metadaten-Filter: ${explanation.metadata_filters_applied ? '✅ Ja' : '❌ Nein'}\n`;
+        responseText += `• Semantische Suche: ${explanation.semantic_search_performed ? '✅ Aktiv' : '❌ Nicht verfügbar'}\n\n`;
+        
+        if (totalResults > 0) {
+          responseText += `🎯 Ergebnisse (${totalResults} gefunden):\n\n`;
+          result.combined_results.slice(0, 10).forEach(memory => {
+            const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
+            const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
+            responseText += `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${relevanceScore}\n🏷️ ${memory.topic}\n${memory.content.substring(0, 120)}...\n\n---\n\n`;
+          });
+        } else {
+          responseText += '🔍 Keine Ergebnisse gefunden.';
+        }
+        
+        return { content: [{ type: 'text', text: responseText }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler bei der erklärenden Suche: ${error}` }] };
       }
 
     default:
