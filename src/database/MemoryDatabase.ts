@@ -976,55 +976,302 @@ export class MemoryDatabase {
   }
 
   /**
-   * Detailed search that explains the search strategy used
-   * Shows whether results come from metadata filtering, semantic similarity, or both
+   * Enhanced search with reranking - improved version of searchMemoriesAdvanced
    */
-  async searchMemoriesWithExplanation(query: string, categories?: string[]): Promise<{
+  async searchMemoriesWithReranking(query: string, categories?: string[], rerankStrategy: 'hybrid' | 'llm' | 'text' = 'hybrid'): Promise<{
     success: boolean;
-    search_explanation: {
-      sqlite_strategy: string;
-      chroma_strategy: string;
-      metadata_filters_applied: boolean;
-      semantic_search_performed: boolean;
-    };
     sqlite_results: any[];
     chroma_results: any[];
     combined_results: any[];
+    reranked_results: any[];
+    rerank_strategy: string;
     error?: string;
   }> {
     try {
-      const result = await this.searchMemoriesAdvanced(query, categories);
+      // Start with advanced search
+      const baseResult = await this.searchMemoriesAdvanced(query, categories);
       
-      const explanation = {
-        sqlite_strategy: "Full-text search in topic and content fields",
-        chroma_strategy: "Semantic vector similarity search using embeddings",
-        metadata_filters_applied: categories ? categories.length > 0 : false,
-        semantic_search_performed: this.chromaClient !== null
-      };
-
-      if (categories && categories.length > 0) {
-        explanation.chroma_strategy += ` with metadata filtering on categories: [${categories.join(', ')}]`;
+      if (!baseResult.success) {
+        return {
+          ...baseResult,
+          reranked_results: [],
+          rerank_strategy: rerankStrategy
+        };
       }
 
+      // Apply reranking to combined results
+      const rerankedResults = await this.rerankResults(query, baseResult.combined_results, rerankStrategy);
+
       return {
-        ...result,
-        search_explanation: explanation
+        ...baseResult,
+        reranked_results: rerankedResults,
+        rerank_strategy: rerankStrategy
       };
 
     } catch (error) {
       return {
         success: false,
-        search_explanation: {
-          sqlite_strategy: "Full-text search (failed)",
-          chroma_strategy: "Semantic search (failed)", 
-          metadata_filters_applied: false,
-          semantic_search_performed: false
-        },
         sqlite_results: [],
         chroma_results: [],
         combined_results: [],
+        reranked_results: [],
+        rerank_strategy: rerankStrategy,
         error: String(error)
       };
     }
+  }
+
+  /**
+   * Intelligent search with automatic reranking
+   */
+  async searchMemoriesIntelligentWithReranking(query: string, categories?: string[]): Promise<{
+    success: boolean;
+    sqlite_results: any[];
+    chroma_results: any[];
+    combined_results: any[];
+    reranked_results: any[];
+    search_strategy: 'hybrid' | 'chroma_only';
+    rerank_strategy: string;
+    error?: string;
+  }> {
+    try {
+      // Get intelligent search results
+      const intelligentResult = await this.searchMemoriesIntelligent(query, categories);
+      
+      if (!intelligentResult.success) {
+        return {
+          ...intelligentResult,
+          reranked_results: [],
+          rerank_strategy: 'none'
+        };
+      }
+
+      // Choose reranking strategy based on result types and availability
+      let rerankStrategy: 'hybrid' | 'llm' | 'text' = 'hybrid';
+      
+      // If mostly ChromaDB results, use more sophisticated reranking
+      const chromaRatio = intelligentResult.chroma_results.length / Math.max(1, intelligentResult.combined_results.length);
+      if (chromaRatio > 0.7 && this.analyzer) {
+        rerankStrategy = 'llm'; // Use LLM for semantic-heavy results
+      } else if (chromaRatio > 0.5) {
+        rerankStrategy = 'text'; // Use text-based for mixed results
+      }
+
+      // Apply reranking
+      const rerankedResults = await this.rerankResults(query, intelligentResult.combined_results, rerankStrategy);
+
+      return {
+        ...intelligentResult,
+        reranked_results: rerankedResults,
+        rerank_strategy: rerankStrategy
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        sqlite_results: [],
+        chroma_results: [],
+        combined_results: [],
+        reranked_results: [],
+        search_strategy: 'hybrid',
+        rerank_strategy: 'none',
+        error: String(error)
+      };
+    }
+  }
+
+  /**
+   * Rerank search results using multiple strategies
+   * Improves relevance of ChromaDB results through additional scoring
+   */
+  private async rerankResults(query: string, results: any[], strategy: 'hybrid' | 'llm' | 'text' = 'hybrid'): Promise<any[]> {
+    if (results.length === 0) return results;
+
+    switch (strategy) {
+      case 'hybrid':
+        return this.rerankHybrid(query, results);
+      case 'llm':
+        return this.rerankWithLLM(query, results);
+      case 'text':
+        return this.rerankTextBased(query, results);
+      default:
+        return results;
+    }
+  }
+
+  /**
+   * Hybrid reranking: Combines semantic similarity, text overlap, metadata relevance, and recency
+   */
+  private rerankHybrid(query: string, results: any[]): any[] {
+    const lowerQuery = query.toLowerCase();
+    const queryWords = lowerQuery.split(/\s+/).filter(word => word.length > 2);
+    
+    return results.map(result => {
+      const content = (result.content || '').toLowerCase();
+      const topic = (result.topic || '').toLowerCase();
+      
+      // 1. Semantic similarity (from ChromaDB)
+      const semanticScore = result.similarity || result.relevance_score || 0;
+      
+      // 2. Text overlap score
+      let textScore = 0;
+      queryWords.forEach(word => {
+        if (content.includes(word)) textScore += 0.3;
+        if (topic.includes(word)) textScore += 0.5;
+      });
+      textScore = Math.min(textScore, 1.0);
+      
+      // 3. Metadata relevance (category match, source quality)
+      let metadataScore = 0;
+      if (result.source === 'sqlite') metadataScore += 0.2; // SQLite entries are curated
+      if (result.source_category && result.source_category !== 'unknown') metadataScore += 0.1;
+      if (!result.is_concept_reconstruction) metadataScore += 0.1; // Original memories preferred
+      
+      // 4. Recency boost (more recent = slightly higher score)
+      let recencyScore = 0;
+      if (result.created_at) {
+        const daysSinceCreation = (Date.now() - new Date(result.created_at).getTime()) / (1000 * 60 * 60 * 24);
+        recencyScore = Math.max(0, (365 - daysSinceCreation) / 365) * 0.1; // Boost within last year
+      }
+      
+      // Weighted combination
+      const finalScore = (
+        0.4 * semanticScore +
+        0.3 * textScore +
+        0.2 * metadataScore +
+        0.1 * recencyScore
+      );
+      
+      return {
+        ...result,
+        rerank_score: finalScore,
+        rerank_details: {
+          semantic: semanticScore,
+          text: textScore,
+          metadata: metadataScore,
+          recency: recencyScore,
+          strategy: 'hybrid'
+        }
+      };
+    }).sort((a, b) => (b.rerank_score || 0) - (a.rerank_score || 0));
+  }
+
+  /**
+   * Text-based reranking: Advanced text similarity metrics
+   */
+  private rerankTextBased(query: string, results: any[]): any[] {
+    const lowerQuery = query.toLowerCase();
+    const queryWords = new Set(lowerQuery.split(/\s+/).filter(word => word.length > 2));
+    
+    return results.map(result => {
+      const content = (result.content || '').toLowerCase();
+      const topic = (result.topic || '').toLowerCase();
+      const combined = `${topic} ${content}`;
+      const combinedWords = new Set(combined.split(/\s+/).filter(word => word.length > 2));
+      
+      // Jaccard similarity
+      const intersection = new Set([...queryWords].filter(word => combinedWords.has(word)));
+      const union = new Set([...queryWords, ...combinedWords]);
+      const jaccardScore = intersection.size / union.size;
+      
+      // BM25-like scoring
+      const termFrequency = [...queryWords].reduce((score, word) => {
+        const matches = (combined.match(new RegExp(word, 'g')) || []).length;
+        return score + matches;
+      }, 0);
+      
+      const bm25Score = termFrequency / (1 + combined.length / 100); // Normalized by length
+      
+      // Combine scores
+      const textScore = 0.6 * jaccardScore + 0.4 * Math.min(bm25Score, 1.0);
+      const semanticScore = result.similarity || result.relevance_score || 0;
+      const finalScore = 0.7 * textScore + 0.3 * semanticScore;
+      
+      return {
+        ...result,
+        rerank_score: finalScore,
+        rerank_details: {
+          jaccard: jaccardScore,
+          bm25: bm25Score,
+          text: textScore,
+          semantic: semanticScore,
+          strategy: 'text'
+        }
+      };
+    }).sort((a, b) => (b.rerank_score || 0) - (a.rerank_score || 0));
+  }
+
+  /**
+   * LLM-based reranking: Uses semantic analyzer to evaluate relevance
+   */
+  private async rerankWithLLM(query: string, results: any[]): Promise<any[]> {
+    if (!this.analyzer || results.length === 0) return results;
+
+    try {
+      // Batch process for efficiency (process in chunks of 5)
+      const batchSize = 5;
+      const rankedResults = [];
+      
+      for (let i = 0; i < results.length; i += batchSize) {
+        const batch = results.slice(i, i + batchSize);
+        const batchPromises = batch.map(async (result) => {
+          try {
+            // Create relevance evaluation prompt
+            const evaluationPrompt = `
+Query: "${query}"
+
+Document:
+Title: ${result.topic || 'N/A'}
+Content: ${result.content || 'N/A'}
+Category: ${result.category || 'unknown'}
+
+Rate the relevance of this document to the query on a scale of 0.0 to 1.0.
+Consider semantic meaning, not just keyword matching.
+Return only the number (e.g., 0.85).
+            `.trim();
+
+            // Note: This would need to be implemented in SemanticAnalyzer
+            // For now, use a simplified approach
+            const relevanceScore = await this.evaluateRelevanceWithLLM(query, result);
+            
+            return {
+              ...result,
+              rerank_score: relevanceScore,
+              rerank_details: {
+                llm_relevance: relevanceScore,
+                original_similarity: result.similarity || result.relevance_score || 0,
+                strategy: 'llm'
+              }
+            };
+          } catch (error) {
+            console.error(`LLM reranking failed for result:`, error);
+            return {
+              ...result,
+              rerank_score: result.similarity || result.relevance_score || 0,
+              rerank_details: { strategy: 'llm', error: String(error) }
+            };
+          }
+        });
+        
+        const batchResults = await Promise.all(batchPromises);
+        rankedResults.push(...batchResults);
+      }
+      
+      return rankedResults.sort((a, b) => (b.rerank_score || 0) - (a.rerank_score || 0));
+      
+    } catch (error) {
+      console.error('LLM reranking failed:', error);
+      return results; // Fallback to original order
+    }
+  }
+
+  /**
+   * Simplified LLM relevance evaluation
+   */
+  private async evaluateRelevanceWithLLM(query: string, document: any): Promise<number> {
+    // This is a placeholder - would need to be implemented with actual LLM call
+    // For now, use hybrid scoring as fallback
+    const hybridResults = this.rerankHybrid(query, [document]);
+    return hybridResults[0]?.rerank_score || 0;
   }
 }

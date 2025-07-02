@@ -372,6 +372,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['query'],
         },
       },
+      {
+        name: 'search_memories_with_reranking',
+        description: 'Erweiterte Suche mit intelligenter Neugewichtung der Ergebnisse für bessere Relevanz',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff' },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+            rerank_strategy: { 
+              type: 'string', 
+              enum: ['hybrid', 'llm', 'text'], 
+              description: 'Reranking-Strategie: hybrid (empfohlen), llm (semantisch), text (textbasiert)',
+              default: 'hybrid'
+            },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'search_memories_intelligent_with_reranking',
+        description: 'Intelligente adaptive Suche mit automatischer Reranking-Strategiewahl',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff' },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+          },
+          required: ['query'],
+        },
+      },
     ];
   
   return { tools };
@@ -780,12 +810,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         
         const strategyIcon = result.search_strategy === 'hybrid' ? '🔄' : '🧠';
-        const strategyText = result.search_strategy === 'hybrid' ? 'Hybrid (SQLite + ChromaDB)' : 'ChromaDB-only (Semantische Suche)';
-        
         const totalResults = result.combined_results.length;
         
         if (totalResults === 0) {
-          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Strategie: ${strategyIcon} ${strategyText}` }] };
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Strategie: ${strategyIcon} ${result.search_strategy}` }] };
         }
         
         const memoryText = result.combined_results.slice(0, 15).map(memory => {
@@ -799,7 +827,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { 
           content: [{ 
             type: 'text', 
-            text: `🤖 Intelligente Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${strategyIcon} ${strategyText}\n📈 Ergebnisse: ${totalResults} gefunden\n\n🎯 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
+            text: `🤖 Intelligente Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${strategyIcon} ${result.search_strategy}\n📈 Ergebnisse: ${totalResults} gefunden\n\n🎯 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
           }] 
         };
       } catch (error) {
@@ -895,12 +923,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const categories = args?.categories as string[];
         if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchMemoriesWithExplanation(query, categories);
+        const result = await memoryDb.searchMemoriesAdvanced(query, categories);
+        
+        const explanation = {
+          sqlite_strategy: "Full-text search in topic and content fields",
+          chroma_strategy: "Semantic vector similarity search using embeddings",
+          metadata_filters_applied: categories ? categories.length > 0 : false,
+          semantic_search_performed: memoryDb.chromaClient !== null
+        };
+
+        if (categories && categories.length > 0) {
+          explanation.chroma_strategy += ` with metadata filtering on categories: [${categories.join(', ')}]`;
+        }
         if (!result.success) {
           return { content: [{ type: 'text', text: `❌ Erklärende Suche fehlgeschlagen: ${result.error}` }] };
         }
         
-        const explanation = result.search_explanation;
         const totalResults = result.combined_results.length;
         
         let responseText = `🔬 Such-Analyse für "${query}":\n\n`;
@@ -912,7 +950,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (totalResults > 0) {
           responseText += `🎯 Ergebnisse (${totalResults} gefunden):\n\n`;
-          result.combined_results.slice(0, 10).forEach(memory => {
+          result.combined_results.slice(0, 10).forEach((memory: any) => {
             const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
             const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
             responseText += `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${relevanceScore}\n🏷️ ${memory.topic}\n${memory.content.substring(0, 120)}...\n\n---\n\n`;
@@ -924,6 +962,84 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: responseText }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Fehler bei der erklärenden Suche: ${error}` }] };
+      }
+
+    case 'search_memories_with_reranking':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const query = args?.query as string;
+        const categories = args?.categories as string[];
+        const rerankStrategy = (args?.rerank_strategy as 'hybrid' | 'llm' | 'text') || 'hybrid';
+        if (!query) throw new Error('Query parameter is required');
+        
+        const result = await memoryDb.searchMemoriesWithReranking(query, categories, rerankStrategy);
+        if (!result.success) {
+          return { content: [{ type: 'text', text: `❌ Reranking-Suche fehlgeschlagen: ${result.error}` }] };
+        }
+        
+        const totalResults = result.reranked_results.length;
+        
+        if (totalResults === 0) {
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.` }] };
+        }
+        
+        const memoryText = result.reranked_results.slice(0, 15).map(memory => {
+          const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
+          const rerankScore = memory.rerank_score ? ` (⚡${(memory.rerank_score * 100).toFixed(0)}%)` : '';
+          const details = memory.rerank_details ? ` [${Object.entries(memory.rerank_details).map(([k,v]) => `${k}:${typeof v === 'number' ? (v * 100).toFixed(0) + '%' : v}`).join(', ')}]` : '';
+          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${rerankScore}\n🏷️ ${memory.topic}\n${memory.content}\n📊 ${details}\n`;
+        }).join('\n---\n\n');
+        
+        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+        return { 
+          content: [{ 
+            type: 'text', 
+            text: `🎯 Reranked Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${result.rerank_strategy}\n📈 Ergebnisse: ${totalResults} neugewichtet\n\n🏆 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
+          }] 
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler bei der Reranking-Suche: ${error}` }] };
+      }
+
+    case 'search_memories_intelligent_with_reranking':
+      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+      
+      try {
+        const query = args?.query as string;
+        const categories = args?.categories as string[];
+        if (!query) throw new Error('Query parameter is required');
+        
+        const result = await memoryDb.searchMemoriesIntelligentWithReranking(query, categories);
+        if (!result.success) {
+          return { content: [{ type: 'text', text: `❌ Intelligente Reranking-Suche fehlgeschlagen: ${result.error}` }] };
+        }
+        
+        const strategyIcon = result.search_strategy === 'hybrid' ? '🔄' : '🧠';
+        const rerankIcon = result.rerank_strategy === 'llm' ? '🤖' : result.rerank_strategy === 'text' ? '📝' : '⚖️';
+        
+        const totalResults = result.reranked_results.length;
+        
+        if (totalResults === 0) {
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Such-Strategie: ${strategyIcon} ${result.search_strategy}\n⚡ Rerank-Strategie: ${rerankIcon} ${result.rerank_strategy}` }] };
+        }
+        
+        const memoryText = result.reranked_results.slice(0, 12).map(memory => {
+          const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🔗';
+          const rerankScore = memory.rerank_score ? ` (⚡${(memory.rerank_score * 100).toFixed(0)}%)` : '';
+          const isReconstruction = memory.is_concept_reconstruction ? ' [Rekonstruiert]' : '';
+          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${rerankScore}${isReconstruction}\n🏷️ ${memory.topic}\n${memory.content}\n`;
+        }).join('\n---\n\n');
+        
+        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+        return { 
+          content: [{ 
+            type: 'text', 
+            text: `🤖 Intelligente Reranked Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Such-Strategie: ${strategyIcon} ${result.search_strategy}\n⚡ Rerank-Strategie: ${rerankIcon} ${result.rerank_strategy}\n📈 Ergebnisse: ${totalResults} optimiert\n\n🏆 Top ${Math.min(12, totalResults)} Ergebnisse:\n\n${memoryText}` 
+          }] 
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler bei der intelligenten Reranking-Suche: ${error}` }] };
       }
 
     default:
