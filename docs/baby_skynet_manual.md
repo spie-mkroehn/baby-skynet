@@ -196,7 +196,7 @@ Das semantische Analysesystem klassifiziert alle Memories in 6 Typen:
 
 ### **1. faktenwissen** 
 - Objektive, dokumentierbare Informationen
-- **→ ROUTING: Nur LanceDB (nie SQLite)**
+- **→ ROUTING: Nur ChromaDB/Neo4j (nie SQLite)**
 
 ### **2. prozedurales_wissen**
 - Technisches Know-how, Debugging-Lösungen, Workflows  
@@ -218,12 +218,13 @@ Das semantische Analysesystem klassifiziert alle Memories in 6 Typen:
 - Arbeitsaufteilung, Vertrauen-Meilensteine, Team-Dynamiken, Kommunikations-Pattern
 - **→ ROUTING: ChromaDB/Neo4j + Bedeutsamkeits-Check → Optional SQLite**
 
-### **Spezial-Kategorien:**
+### **Spezial-Kategorie in der SQLite:**
 - `forgotten_memories` - \"Vergessene\" Memories (statt löschen)
+- `kernerinnerungen` - Direkt gespeicherte Erinnerungen ohne Bedeutsamkeitscheck
 
 > **Ethik First:** Niemals `delete` - verwende `move_memory` nach `forgotten_memories` für respektvolles \"Vergessen\"
 
-## 🧠 Claude's Bedeutsamkeits-Kriterien (v2.3)
+## 🧠 Claude's Bedeutsamkeits-Kriterien
 
 **FÜR ERLEBNISSE:**
 - Erste Male und Durchbruch-Momente
@@ -273,6 +274,7 @@ baby-skynet:save_new_memory(
   content: \"Detaillierte Beschreibung des Lernens/Problems/Lösung\"
 )
 ```
+Diese Methode wird ebenfalls verwendet, um Erinnerungen, die der Kategorie "kernerinnerungen" zugeordnet werden, direkt in die SQLite zu speichern, ohne die Bedeutsamkeitsprüfung zu durchlaufen.
 
 **Expected Output für `save_memory_with_graph`:**
 ```

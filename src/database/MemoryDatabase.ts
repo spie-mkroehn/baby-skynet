@@ -3,10 +3,14 @@ import { v4 as uuidv4 } from 'uuid';
 import { ShortMemoryManager } from './ShortMemoryManager.js';
 import { Neo4jClient } from '../vectordb/Neo4jClient.js';
 
-// Valid Memory Categories (7-Category Architecture)
+// Valid Memory Categories (8-Category Architecture + Legacy Categories)
 const VALID_CATEGORIES = [
+  // Modern 7-Category Architecture
   'faktenwissen', 'prozedurales_wissen', 'erlebnisse', 
-  'bewusstsein', 'humor', 'zusammenarbeit', 'codex'
+  'bewusstsein', 'humor', 'zusammenarbeit', 'codex',
+  // Legacy categories (still supported)
+  'kernerinnerungen', 'programmieren', 'projekte', 'debugging', 
+  'philosophie', 'anstehende_aufgaben', 'erledigte_aufgaben', 'forgotten_memories'
 ];
 
 // Forward declaration - SemanticAnalyzer wird später importiert
@@ -19,6 +23,7 @@ interface SemanticAnalyzer {
 interface ChromaDBClient {
   storeConcepts(memory: any, concepts: any[]): Promise<{ success: boolean; stored: number; errors: string[] }>;
   searchConcepts(query: string, limit?: number, filter?: any): Promise<any>;
+  getCollectionInfo(): Promise<any>;
 }
 
 // SQLite Database Helper mit Job-Management

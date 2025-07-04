@@ -519,17 +519,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                 llmStatus.status === 'model_missing' ? '⚠️ Model Missing' : 
                                 `❌ ${llmStatus.error}`;
         
+        // Get ChromaDB statistics
+        let chromaDBInfo = '❌ Not Available';
+        if (memoryDb.chromaClient) {
+          try {
+            const chromaInfo = await memoryDb.chromaClient.getCollectionInfo();
+            if (chromaInfo.initialized) {
+              chromaDBInfo = `✅ ${chromaInfo.count} concepts (${chromaInfo.embedding_provider})`;
+            } else {
+              chromaDBInfo = `❌ ${chromaInfo.error || 'Not initialized'}`;
+            }
+          } catch (error) {
+            chromaDBInfo = `❌ Error: ${error}`;
+          }
+        }
+        
+        // Get Neo4j statistics  
+        let neo4jInfo = '❌ Not Available';
+        if (memoryDb.neo4jClient) {
+          try {
+            const graphStats = await memoryDb.getGraphStatistics();
+            if (graphStats.success) {
+              neo4jInfo = `✅ ${graphStats.total_nodes} nodes, ${graphStats.total_relationships} relationships`;
+            } else {
+              neo4jInfo = `❌ ${graphStats.error || 'Not connected'}`;
+            }
+          } catch (error) {
+            neo4jInfo = `❌ Error: ${error}`;
+          }
+        }
+        
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: kernerinnerungen, programmieren, projekte, debugging, humor, philosophie, anstehende_aufgaben, erledigte_aufgaben, forgotten_memories`,
+            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen`,
           }],
         };
       } catch (error) {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available`,
+            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n🧠 ChromaDB: ❌ Error loading\n🕸️ Neo4j Graph: ❌ Error loading\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available`,
           }],
         };
       }
