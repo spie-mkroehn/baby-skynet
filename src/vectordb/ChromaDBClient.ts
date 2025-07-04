@@ -1,5 +1,6 @@
 import { ChromaClient, Collection } from 'chromadb';
 import { EmbeddingFactory, EmbeddingProvider } from '../embedding/index.js';
+import { Logger } from '../utils/Logger.js';
 
 // ChromaDB Integration Class
 export class ChromaDBClient {
@@ -16,24 +17,31 @@ export class ChromaDBClient {
 
   async initialize(): Promise<void> {
     try {
+      Logger.info('Step 1: Testing ChromaDB heartbeat...');
       // Test ChromaDB connection
       await this.client.heartbeat();
+      Logger.success('Step 1: ChromaDB heartbeat successful');
       
+      Logger.info('Step 2: Testing embedding provider connection...');
       // Test embedding provider
       const embeddingWorks = await this.embeddingProvider.testConnection();
       if (!embeddingWorks) {
         throw new Error('Embedding provider connection failed');
       }
+      Logger.success('Step 2: Embedding provider connection successful');
       
+      Logger.info('Step 3: Creating/getting ChromaDB collection...');
       // Get or create collection with embedding function
       this.collection = await this.client.getOrCreateCollection({
         name: this.collectionName,
         embeddingFunction: this.embeddingProvider
       });
+      Logger.success('Step 3: ChromaDB collection ready');
       
-      console.error(`📊 ChromaDB: Collection "${this.collectionName}" ready`);
+      Logger.success(`ChromaDB: Collection "${this.collectionName}" ready`);
     } catch (error) {
-      console.error(`❌ ChromaDB initialization failed: ${error}`);
+      Logger.error(`ChromaDB initialization failed: ${error}`);
+      Logger.error('ChromaDB initialization error details', error);
       throw error;
     }
   }

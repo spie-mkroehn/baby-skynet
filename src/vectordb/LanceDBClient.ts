@@ -1,4 +1,5 @@
 import { connect } from '@lancedb/lancedb';
+import { Logger } from '../utils/Logger.js';
 
 // LanceDB Integration Class
 export class LanceDBClient {
@@ -9,18 +10,38 @@ export class LanceDBClient {
 
   constructor(lancedbPath: string) {
     this.lancedbPath = lancedbPath;
+    
+    Logger.info('LanceDBClient initialized', { 
+      path: this.lancedbPath, 
+      tableName: this.tableName 
+    });
   }
 
   async initialize(): Promise<void> {
+    Logger.info('Initializing LanceDB connection', { 
+      path: this.lancedbPath, 
+      tableName: this.tableName 
+    });
+    
     try {
       // Connect to LanceDB
       this.db = await connect(this.lancedbPath);
+      Logger.debug('LanceDB connection established', { path: this.lancedbPath });
       
       // Create or open table
       const tableNames = await this.db.tableNames();
+      Logger.debug('Retrieved LanceDB table names', { 
+        availableTables: tableNames,
+        targetTable: this.tableName,
+        tableExists: tableNames.includes(this.tableName)
+      });
+      
       if (tableNames.includes(this.tableName)) {
         this.table = await this.db.openTable(this.tableName);
+        Logger.info('LanceDB table opened successfully', { tableName: this.tableName });
       } else {
+        Logger.info('Creating new LanceDB table', { tableName: this.tableName });
+        
         // Create table with initial schema
         const initialData = [{
           id: "init",
@@ -40,21 +61,44 @@ export class LanceDBClient {
         }];
         
         this.table = await this.db.createTable(this.tableName, initialData);
+        Logger.debug('LanceDB table created with initial schema', { 
+          tableName: this.tableName,
+          vectorDimensions: 384
+        });
+        
         // Remove the placeholder record
         await this.table.delete("id = 'init'");
+        Logger.debug('LanceDB placeholder record removed');
       }
       
-      console.error(`📊 LanceDB: Table "${this.tableName}" ready`);
+      Logger.success('LanceDB initialization completed', { 
+        tableName: this.tableName,
+        path: this.lancedbPath
+      });
     } catch (error) {
-      console.error(`❌ LanceDB initialization failed: ${error}`);
+      Logger.error('LanceDB initialization failed', { 
+        path: this.lancedbPath,
+        tableName: this.tableName,
+        error: String(error) 
+      });
       throw error;
     }
   }
 
   async storeConcepts(originalMemory: any, semanticConcepts: any[]): Promise<{ success: boolean; stored: number; errors: string[] }> {
     if (!this.table) {
+      Logger.error('LanceDB storeConcepts failed - not initialized', { 
+        memoryId: originalMemory?.id,
+        conceptCount: semanticConcepts?.length || 0
+      });
       throw new Error('LanceDB not initialized');
     }
+
+    Logger.info('Starting LanceDB concept storage', { 
+      memoryId: originalMemory.id,
+      category: originalMemory.category,
+      conceptCount: semanticConcepts.length
+    });
 
     const results: { success: boolean; stored: number; errors: string[] } = { success: true, stored: 0, errors: [] };
 
@@ -62,6 +106,13 @@ export class LanceDBClient {
       const concept = semanticConcepts[i];
       try {
         const documentId = `memory_${originalMemory.id}_concept_${i + 1}`;
+        
+        Logger.debug(`Storing concept ${i + 1}/${semanticConcepts.length}`, { 
+          documentId,
+          conceptTitle: concept.concept_title?.substring(0, 50) + '...',
+          memoryType: concept.memory_type,
+          confidence: concept.confidence
+        });
         
         // Simple embedding: Convert text to basic vector (placeholder)
         // In production, this would use a real embedding model
@@ -86,18 +137,38 @@ export class LanceDBClient {
 
         await this.table.add([record]);
         results.stored++;
-        console.error(`✅ LanceDB: Stored concept "${concept.concept_title}"`);
+        
+        Logger.debug('LanceDB concept stored successfully', { 
+          documentId,
+          conceptTitle: concept.concept_title?.substring(0, 30) + '...'
+        });
       } catch (error) {
-        console.error(`❌ LanceDB: Failed to store concept ${i + 1}: ${error}`);
+        Logger.error(`LanceDB concept storage failed for concept ${i + 1}`, { 
+          conceptTitle: concept.concept_title,
+          error: String(error) 
+        });
         results.errors.push(`Concept ${i + 1}: ${String(error)}`);
         results.success = false;
       }
     }
 
+    Logger.success('LanceDB concept storage completed', { 
+      memoryId: originalMemory.id,
+      totalConcepts: semanticConcepts.length,
+      storedSuccessfully: results.stored,
+      errors: results.errors.length,
+      overallSuccess: results.success
+    });
+
     return results;
   }
 
   private createSimpleEmbedding(text: string): number[] {
+    Logger.debug('Creating simple embedding for LanceDB', { 
+      textLength: text.length,
+      vectorDimensions: 384
+    });
+    
     // Simple hash-based embedding (placeholder)
     // In production, use proper embedding model
     const hash = this.simpleHash(text);
@@ -122,8 +193,16 @@ export class LanceDBClient {
 
   async searchConcepts(query: string, limit: number = 5, filter?: any): Promise<any> {
     if (!this.table) {
+      Logger.error('LanceDB searchConcepts failed - not initialized', { query: query?.substring(0, 50) });
       throw new Error('LanceDB not initialized');
     }
+
+    Logger.info('Starting LanceDB concept search', { 
+      query: query?.substring(0, 100) + '...',
+      limit,
+      hasFilter: !!filter,
+      filterKeys: filter ? Object.keys(filter) : []
+    });
 
     try {
       // For now, implement simple metadata search
@@ -131,6 +210,7 @@ export class LanceDBClient {
       let searchQuery = this.table.search();
       
       if (filter) {
+        Logger.debug('Applying LanceDB search filters', { filter });
         for (const [key, value] of Object.entries(filter)) {
           if (typeof value === 'string') {
             searchQuery = searchQuery.where(`${key} = '${value}'`);
@@ -147,6 +227,12 @@ export class LanceDBClient {
       
       const results = await searchQuery.limit(limit).toArray();
 
+      Logger.success('LanceDB search completed', { 
+        query: query?.substring(0, 50) + '...',
+        resultCount: results.length,
+        limit
+      });
+
       return {
         success: true,
         results: results.map((r: any) => r.concept_description),
@@ -154,18 +240,31 @@ export class LanceDBClient {
         ids: results.map((r: any) => r.id)
       };
     } catch (error) {
-      console.error(`❌ LanceDB search failed: ${error}`);
+      Logger.error('LanceDB search failed', { 
+        query: query?.substring(0, 50) + '...',
+        error: String(error) 
+      });
       return { success: false, error: String(error) };
     }
   }
 
   async getCollectionInfo(): Promise<any> {
+    Logger.debug('Retrieving LanceDB collection info', { tableName: this.tableName });
+    
     if (!this.table) {
+      Logger.warn('LanceDB collection info requested but not initialized', { tableName: this.tableName });
       return { initialized: false };
     }
 
     try {
       const count = await this.table.countRows();
+      
+      Logger.success('LanceDB collection info retrieved', { 
+        tableName: this.tableName,
+        rowCount: count,
+        path: this.lancedbPath
+      });
+      
       return {
         initialized: true,
         name: this.tableName,
@@ -173,6 +272,10 @@ export class LanceDBClient {
         path: this.lancedbPath
       };
     } catch (error) {
+      Logger.error('LanceDB collection info retrieval failed', { 
+        tableName: this.tableName,
+        error: String(error) 
+      });
       return { initialized: false, error: String(error) };
     }
   }

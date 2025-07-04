@@ -1,5 +1,6 @@
 import { OllamaClient } from './OllamaClient.js';
 import { AnthropicClient } from './AnthropicClient.js';
+import { Logger } from '../utils/Logger.js';
 
 const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
 const OLLAMA_BASE_URL = 'http://localhost:11434';
@@ -12,16 +13,21 @@ export class SemanticAnalyzer {
   private isAnthropic: boolean;
   
   constructor(llmModel: string) {
+    Logger.info('Initializing SemanticAnalyzer', { llmModel });
+    
     // Umfassende Parameter-Validierung
     if (llmModel === undefined || llmModel === null) {
+      Logger.error('SemanticAnalyzer constructor: llmModel parameter is required', { received: 'undefined/null' });
       throw new Error('llmModel parameter is required (received undefined/null)');
     }
     
     if (typeof llmModel !== 'string') {
+      Logger.error('SemanticAnalyzer constructor: llmModel must be a string', { received: typeof llmModel });
       throw new Error(`llmModel must be a string (received ${typeof llmModel})`);
     }
     
     if (llmModel.trim() === '') {
+      Logger.error('SemanticAnalyzer constructor: llmModel cannot be empty string');
       throw new Error('llmModel cannot be empty string');
     }
   
@@ -29,14 +35,56 @@ export class SemanticAnalyzer {
     this.isAnthropic = this.llmModel.startsWith('claude-');
     this.ollama = new OllamaClient(OLLAMA_BASE_URL, this.llmModel);
     this.anthropic = new AnthropicClient(ANTHROPIC_BASE_URL, this.llmModel);
+    
+    Logger.success('SemanticAnalyzer initialized successfully', { 
+      model: this.llmModel, 
+      provider: this.isAnthropic ? 'Anthropic' : 'Ollama' 
+    });
   }
   
   async testConnection() {
-    return this.isAnthropic ? this.anthropic.testConnection() : this.ollama.testConnection();
+    Logger.info('Testing LLM connection', { model: this.llmModel, provider: this.isAnthropic ? 'Anthropic' : 'Ollama' });
+    const result = this.isAnthropic ? this.anthropic.testConnection() : this.ollama.testConnection();
+    
+    result.then(res => {
+      if (res.status === 'ready') {
+        Logger.success('LLM connection test successful', { model: this.llmModel, status: res.status });
+      } else {
+        Logger.warn('LLM connection test failed', { model: this.llmModel, status: res.status, error: res.error });
+      }
+    }).catch(error => {
+      Logger.error('LLM connection test error', { model: this.llmModel, error: String(error) });
+    });
+    
+    return result;
   }
   
   private async generateResponse(prompt: string): Promise<{ response?: string; error?: string }> {
-    return this.isAnthropic ? this.anthropic.generateResponse(prompt) : this.ollama.generateResponse(prompt);
+    Logger.debug('Generating LLM response', { 
+      model: this.llmModel, 
+      provider: this.isAnthropic ? 'Anthropic' : 'Ollama',
+      promptLength: prompt.length 
+    });
+    
+    const result = this.isAnthropic ? this.anthropic.generateResponse(prompt) : this.ollama.generateResponse(prompt);
+    
+    result.then(res => {
+      if (res.error) {
+        Logger.error('LLM response generation failed', { 
+          model: this.llmModel, 
+          error: res.error 
+        });
+      } else {
+        Logger.debug('LLM response generated successfully', { 
+          model: this.llmModel,
+          responseLength: res.response?.length || 0
+        });
+      }
+    }).catch(error => {
+      Logger.error('LLM response generation error', { model: this.llmModel, error: String(error) });
+    });
+    
+    return result;
   }
   
   async analyzeMemory(memory: any): Promise<{
@@ -47,16 +95,39 @@ export class SemanticAnalyzer {
     extracted_concepts?: string[];
     error?: string;
   }> {
+    Logger.info('Starting memory analysis', { 
+      category: memory.category, 
+      topic: memory.topic?.substring(0, 50) + '...',
+      contentLength: memory.content?.length || 0
+    });
+    
     const prompt = this.buildAnalysisPrompt(memory);
     const response = await this.generateResponse(prompt);
     
     if (response.error) {
+      Logger.error('Memory analysis failed - LLM response error', { 
+        category: memory.category,
+        error: response.error 
+      });
       return { error: response.error };
     }
     
     try {
-      return this.parseAnalysisResponse(response.response!);
+      const analysis = this.parseAnalysisResponse(response.response!);
+      Logger.success('Memory analysis completed', { 
+        category: memory.category,
+        memoryType: analysis.memory_type,
+        confidence: analysis.confidence,
+        mood: analysis.mood,
+        keywordCount: analysis.keywords?.length || 0,
+        conceptCount: analysis.extracted_concepts?.length || 0
+      });
+      return analysis;
     } catch (error) {
+      Logger.error('Memory analysis failed - parsing error', { 
+        category: memory.category,
+        error: String(error) 
+      });
       return { error: `Failed to parse analysis: ${error}` };
     }
   }
@@ -109,16 +180,39 @@ Be concise and precise. Return ONLY the JSON, no explanation.`;
     reason?: string;
     error?: string;
   }> {
+    Logger.info('Starting significance evaluation', { 
+      category: memory.category, 
+      memoryType,
+      topic: memory.topic?.substring(0, 50) + '...'
+    });
+    
     const prompt = this.buildSignificancePrompt(memory, memoryType);
     const response = await this.generateResponse(prompt);
     
     if (response.error) {
+      Logger.error('Significance evaluation failed - LLM response error', { 
+        category: memory.category,
+        memoryType,
+        error: response.error 
+      });
       return { error: response.error };
     }
     
     try {
-      return this.parseSignificanceResponse(response.response!);
+      const evaluation = this.parseSignificanceResponse(response.response!);
+      Logger.success('Significance evaluation completed', { 
+        category: memory.category,
+        memoryType,
+        significant: evaluation.significant,
+        reason: evaluation.reason?.substring(0, 100) + '...'
+      });
+      return evaluation;
     } catch (error) {
+      Logger.error('Significance evaluation failed - parsing error', { 
+        category: memory.category,
+        memoryType,
+        error: String(error) 
+      });
       return { error: `Failed to parse significance analysis: ${error}` };
     }
   }
@@ -193,27 +287,50 @@ Return ONLY: {"significant": true/false, "reason": "brief explanation"}`;
     semantic_concepts?: any[];
     error?: string;
   }> {
+    Logger.info('Starting concept extraction and analysis pipeline', { 
+      category: memory.category, 
+      topic: memory.topic?.substring(0, 50) + '...',
+      contentLength: memory.content?.length || 0
+    });
+    
     try {
       // Step 1: Extract semantic concepts
+      Logger.debug('Pipeline Step 1: Extracting semantic concepts');
       const extractPrompt = this.buildExtractionPrompt(memory);
       const extractResponse = await this.generateResponse(extractPrompt);
       
       if (extractResponse.error) {
+        Logger.error('Concept extraction failed - LLM response error', { 
+          category: memory.category,
+          error: extractResponse.error 
+        });
         return { error: extractResponse.error };
       }
       
       const concepts = this.parseExtractionResponse(extractResponse.response!);
+      Logger.info('Concepts extracted successfully', { 
+        category: memory.category,
+        conceptCount: concepts.length 
+      });
       
       // Step 2: Analyze each concept individually
+      Logger.debug('Pipeline Step 2: Analyzing individual concepts');
       const analyzedConcepts = [];
       
       for (let i = 0; i < concepts.length; i++) {
         const concept = concepts[i];
+        Logger.debug(`Analyzing concept ${i + 1}/${concepts.length}`, { 
+          title: concept.title?.substring(0, 30) + '...' 
+        });
+        
         const analysisPrompt = this.buildConceptAnalysisPrompt(concept, memory);
         const analysisResponse = await this.generateResponse(analysisPrompt);
         
         if (analysisResponse.error) {
-          console.error(`Analysis failed for concept ${i + 1}: ${analysisResponse.error}`);
+          Logger.error(`Analysis failed for concept ${i + 1}`, { 
+            conceptTitle: concept.title,
+            error: analysisResponse.error 
+          });
           continue;
         }
         
@@ -224,10 +341,24 @@ Return ONLY: {"significant": true/false, "reason": "brief explanation"}`;
             concept_description: concept.description,
             ...analysis
           });
+          Logger.debug(`Concept ${i + 1} analyzed successfully`, { 
+            title: concept.title?.substring(0, 30) + '...',
+            memoryType: analysis.memory_type,
+            confidence: analysis.confidence
+          });
         } catch (error) {
-          console.error(`Failed to parse analysis for concept ${i + 1}: ${error}`);
+          Logger.error(`Failed to parse analysis for concept ${i + 1}`, { 
+            conceptTitle: concept.title,
+            error: String(error) 
+          });
         }
       }
+      
+      Logger.success('Concept extraction and analysis pipeline completed', { 
+        category: memory.category,
+        totalConcepts: concepts.length,
+        successfullyAnalyzed: analyzedConcepts.length
+      });
       
       return {
         original_memory: memory,
@@ -235,6 +366,10 @@ Return ONLY: {"significant": true/false, "reason": "brief explanation"}`;
       };
       
     } catch (error) {
+      Logger.error('Concept extraction and analysis pipeline failed', { 
+        category: memory.category,
+        error: String(error) 
+      });
       return { error: `Pipeline failed: ${error}` };
     }
   }

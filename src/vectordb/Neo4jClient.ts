@@ -1,4 +1,5 @@
 import neo4j, { Driver, Session, Result, Node, Relationship } from 'neo4j-driver';
+import { Logger } from '../utils/Logger.js';
 
 export interface Neo4jConfig {
   uri: string;
@@ -48,37 +49,58 @@ export class Neo4jClient {
   private database: string;
 
   constructor(config: Neo4jConfig) {
+    Logger.info('Neo4j client initialization starting...', { uri: config.uri, database: config.database || 'neo4j' });
+    
     this.driver = neo4j.driver(
       config.uri,
       neo4j.auth.basic(config.username, config.password)
     );
     this.database = config.database || 'neo4j';
+    
+    Logger.success('Neo4j driver created successfully');
   }
 
   async connect(): Promise<void> {
     try {
+      Logger.info('Neo4j connectivity verification starting...');
       await this.driver.verifyConnectivity();
-      console.log('Neo4j connection established');
+      Logger.success('Neo4j connection established successfully');
     } catch (error) {
-      console.error('Failed to connect to Neo4j:', error);
+      Logger.error('Failed to connect to Neo4j', error);
       throw error;
     }
   }
 
   async disconnect(): Promise<void> {
+    Logger.info('Neo4j disconnection initiated');
     await this.driver.close();
+    Logger.success('Neo4j driver closed successfully');
   }
 
   private async runQuery(query: string, parameters: Record<string, any> = {}): Promise<Result> {
     const session: Session = this.driver.session({ database: this.database });
     try {
-      return await session.run(query, parameters);
+      Logger.debug('Neo4j query execution', { 
+        queryPrefix: query.substring(0, 100), 
+        parameterCount: Object.keys(parameters).length 
+      });
+      const result = await session.run(query, parameters);
+      Logger.debug('Neo4j query completed', { recordCount: result.records.length });
+      return result;
+    } catch (error) {
+      Logger.error('Neo4j query execution failed', { 
+        queryPrefix: query.substring(0, 100), 
+        error 
+      });
+      throw error;
     } finally {
       await session.close();
     }
   }
 
   async createMemoryNode(memory: Memory): Promise<void> {
+    Logger.info('Neo4j: Creating memory node', { memoryId: memory.id, category: memory.category, topic: memory.topic });
+    
     const query = `
       CREATE (m:Memory {
         id: $id,
@@ -105,6 +127,7 @@ export class Neo4jClient {
     };
 
     await this.runQuery(query, parameters);
+    Logger.success('Neo4j: Memory node created successfully', { memoryId: memory.id });
   }
 
   async createRelationship(
@@ -113,6 +136,13 @@ export class Neo4jClient {
     relationshipType: string,
     properties: Record<string, any> = {}
   ): Promise<void> {
+    Logger.info('Neo4j: Creating relationship', { 
+      from: fromId, 
+      to: toId, 
+      type: relationshipType, 
+      propertiesCount: Object.keys(properties).length 
+    });
+    
     const query = `
       MATCH (from:Memory {id: $fromId})
       MATCH (to:Memory {id: $toId})
@@ -125,9 +155,17 @@ export class Neo4jClient {
       toId,
       properties
     });
+    
+    Logger.success('Neo4j: Relationship created successfully', { 
+      from: fromId, 
+      to: toId, 
+      type: relationshipType 
+    });
   }
 
   async findMemoryById(id: string): Promise<GraphMemory | null> {
+    Logger.debug('Neo4j: Finding memory by ID', { memoryId: id });
+    
     const query = `
       MATCH (m:Memory {id: $id})
       OPTIONAL MATCH (m)-[r]->(related:Memory)
@@ -137,10 +175,18 @@ export class Neo4jClient {
     const result = await this.runQuery(query, { id });
     const record = result.records[0];
 
-    if (!record) return null;
+    if (!record) {
+      Logger.warn('Neo4j: Memory not found', { memoryId: id });
+      return null;
+    }
 
     const memoryNode = record.get('m') as Node;
     const relationships = record.get('relationships') as any[];
+    
+    Logger.success('Neo4j: Memory found with relationships', { 
+      memoryId: id, 
+      relationshipCount: relationships.length 
+    });
 
     return this.nodeToMemory(memoryNode, relationships);
   }
@@ -150,6 +196,12 @@ export class Neo4jClient {
     relationshipTypes: string[] = [],
     maxDepth: number = 2
   ): Promise<GraphMemory[]> {
+    Logger.info('Neo4j: Searching related memories', { 
+      memoryId, 
+      relationshipTypes, 
+      maxDepth 
+    });
+    
     const relationshipFilter = relationshipTypes.length > 0
       ? `[r:${relationshipTypes.join('|')}*1..${maxDepth}]`
       : `[r*1..${maxDepth}]`;
@@ -163,16 +215,25 @@ export class Neo4jClient {
     `;
 
     const result = await this.runQuery(query, { memoryId });
-    return result.records.map(record => {
+    const memories = result.records.map(record => {
       const memoryNode = record.get('related') as Node;
       return this.nodeToMemory(memoryNode);
     });
+    
+    Logger.success('Neo4j: Related memories found', { 
+      memoryId, 
+      foundCount: memories.length 
+    });
+    
+    return memories;
   }
 
   async searchByContent(
     searchTerm: string,
     limit: number = 10
   ): Promise<GraphMemory[]> {
+    Logger.info('Neo4j: Searching by content', { searchTerm, limit });
+    
     const query = `
       MATCH (m:Memory)
       WHERE m.content CONTAINS $searchTerm
@@ -182,10 +243,17 @@ export class Neo4jClient {
     `;
 
     const result = await this.runQuery(query, { searchTerm, limit });
-    return result.records.map(record => {
+    const memories = result.records.map(record => {
       const memoryNode = record.get('m') as Node;
       return this.nodeToMemory(memoryNode);
     });
+    
+    Logger.success('Neo4j: Content search completed', { 
+      searchTerm, 
+      foundCount: memories.length 
+    });
+    
+    return memories;
   }
 
   async findMemoriesByType(
@@ -242,6 +310,8 @@ export class Neo4jClient {
   }
 
   async createIndex(): Promise<void> {
+    Logger.info('Neo4j: Creating database indexes...');
+    
     const queries = [
       'CREATE INDEX memory_id_index IF NOT EXISTS FOR (m:Memory) ON (m.id)',
       'CREATE INDEX memory_type_index IF NOT EXISTS FOR (m:Memory) ON (m.type)',
@@ -249,22 +319,32 @@ export class Neo4jClient {
       'CREATE FULLTEXT INDEX memory_content_index IF NOT EXISTS FOR (m:Memory) ON (m.content)'
     ];
 
+    let successCount = 0;
     for (const query of queries) {
       try {
         await this.runQuery(query);
+        successCount++;
       } catch (error) {
-        console.warn(`Index creation warning: ${error}`);
+        Logger.warn('Neo4j: Index creation warning', { query: query.substring(0, 50), error });
       }
     }
+    
+    Logger.success('Neo4j: Index creation completed', { 
+      totalIndexes: queries.length, 
+      successCount 
+    });
   }
 
   async deleteMemory(id: string): Promise<void> {
+    Logger.warn('Neo4j: Deleting memory node', { memoryId: id });
+    
     const query = `
       MATCH (m:Memory {id: $id})
       DETACH DELETE m
     `;
 
     await this.runQuery(query, { id });
+    Logger.success('Neo4j: Memory node deleted successfully', { memoryId: id });
   }
 
   async getMemoryStatistics(): Promise<{
@@ -272,6 +352,8 @@ export class Neo4jClient {
     totalRelationships: number;
     relationshipTypes: string[];
   }> {
+    Logger.info('Neo4j: Gathering memory statistics...');
+    
     const queries = {
       totalMemories: 'MATCH (m:Memory) RETURN count(m) as count',
       totalRelationships: 'MATCH ()-[r]->() RETURN count(r) as count',
@@ -284,11 +366,15 @@ export class Neo4jClient {
       this.runQuery(queries.relationshipTypes)
     ]);
 
-    return {
+    const stats = {
       totalMemories: memoriesResult.records[0]?.get('count').toNumber() || 0,
       totalRelationships: relationshipsResult.records[0]?.get('count').toNumber() || 0,
       relationshipTypes: typesResult.records.map(record => record.get('type'))
     };
+    
+    Logger.success('Neo4j: Statistics gathered', stats);
+    
+    return stats;
   }
 
   private nodeToMemory(node: Node, relationships: any[] = []): GraphMemory {

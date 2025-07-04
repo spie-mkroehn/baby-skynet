@@ -119,6 +119,7 @@ docker run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_
 - **`list_categories()`** - ✅ Übersicht aller Kategorien mit Anzahl (WIEDER VERFÜGBAR!)
 - **`get_recent_memories(limit)`** - ✅ Neueste Erinnerungen chronologisch (WIEDER VERFÜGBAR!)
 - **`recall_category(category, limit)`** - ✅ Kategorie-spezifische Abfrage
+- **`read_system_logs(lines?, filter?)`** - ✅ System-Logs auslesen mit Filter-Unterstützung
 
 ### 🔄 Memory Update/Management ✅ WIEDER VERFÜGBAR!
 - **`update_memory(id, topic?, content?, category?)`** - ✅ Memory editieren (WIEDER VERFÜGBAR!)
@@ -221,6 +222,7 @@ Das semantische Analysesystem klassifiziert alle Memories in 6 Typen:
 ### **Spezial-Kategorie in der SQLite:**
 - `forgotten_memories` - \"Vergessene\" Memories (statt löschen)
 - `kernerinnerungen` - Direkt gespeicherte Erinnerungen ohne Bedeutsamkeitscheck
+- `short_memory` - Hier werden die letzten n Erinnerungen gespeichert, um in einer neuen Session nahtlos weitermachen zu können
 
 > **Ethik First:** Niemals `delete` - verwende `move_memory` nach `forgotten_memories` für respektvolles \"Vergessen\"
 
@@ -400,6 +402,56 @@ baby-skynet:test_llm_connection()
 2. Erledigte Tasks entsprechend verschieben/ergänzen
 3. **Experimentell:** `save_new_memory_advanced` für wichtige Durchbrüche
 4. Kompakte, aber informative Inhalte bevorzugen
+
+## 📋 System-Logging & Debugging
+
+**Baby-SkyNet führt ein persistentes Logfile für alle wichtigen Systemereignisse:**
+
+### Log-Dateien:
+- **Hauptlog:** `baby_skynet.log` (Projektverzeichnis)
+- **Rotierung:** Automatisch bei großen Dateien
+- **Format:** Strukturierte Logs mit Timestamp, Level und Kontext
+
+### System-Logs auslesen:
+```
+baby-skynet:read_system_logs()                    // Letzte 50 Zeilen
+baby-skynet:read_system_logs(100)                 // Letzte 100 Zeilen  
+baby-skynet:read_system_logs(20, "ERROR")         // Letzte 20 Zeilen, nur Fehler
+baby-skynet:read_system_logs(50, "ChromaDB")      // Letzte 50 Zeilen, ChromaDB-Filter
+baby-skynet:read_system_logs(30, "Session")       // Session-bezogene Logs
+```
+
+### Typische Log-Kategorien:
+- **Session-Start/Ende:** Server-Initialisierung, Container-Status
+- **ChromaDB:** Container-Management, Collection-Info, Verbindungsstatus
+- **Neo4j:** Graph-Statistiken, Relationship-Erstellung
+- **LanceDB:** Tabel-Initialisierung, Concept-Storage, Vector-Operationen
+- **OpenAI:** Embedding-Tests, API-Status, Embedding-Generierung
+- **LLM-Providers:** Anthropic/Ollama Connection-Tests, Response-Generierung
+- **Semantic Analysis:** Memory-Analyse, Bedeutsamkeits-Bewertung, Konzept-Extraktion
+- **Job Processing:** Asynchrone Job-Verarbeitung, Fortschritt-Tracking
+- **Memory-Operations:** Speicher-Pipeline, Bedeutsamkeits-Analyse
+- **Embedding Factory:** Provider-Erstellung, Konfiguration
+- **Fehler & Warnungen:** System-Probleme, Recovery-Aktionen
+
+### Debug-Workflow bei Problemen:
+1. **System-Status:** `memory_status` für Überblick
+2. **Recent Logs:** `read_system_logs(100)` für aktuelle Ereignisse
+3. **Error Logs:** `read_system_logs(50, "ERROR")` für Fehlermeldungen
+4. **Spezifische Logs:** Mit Filter nach Komponente/Problem suchen
+
+**Beispiel Log-Output:**
+```
+[2025-01-07 10:15:23] INFO Session: Baby-SkyNet v2.5 gestartet
+[2025-01-07 10:15:24] INFO ChromaDB: Container läuft auf localhost:8000  
+[2025-01-07 10:15:25] INFO OpenAI: Embedding-Test erfolgreich
+[2025-01-07 10:15:26] INFO SemanticAnalyzer: Initialisiert mit claude-3-haiku-20240307
+[2025-01-07 10:15:27] INFO AnthropicClient: API-Verbindung erfolgreich
+[2025-01-07 10:15:28] INFO JobProcessor: Memory-Analyse-Job gestartet (ID: job_001)
+[2025-01-07 10:15:29] INFO LanceDB: Tabelle "claude_memories" initialisiert (384 Dimensionen)
+[2025-01-07 10:15:30] ERROR ChromaDB: Collection nicht gefunden - wird erstellt
+[2025-01-07 10:15:31] INFO Neo4j: Graph-Statistiken: 1247 Nodes, 2891 Relationships
+```
 
 ## 🚨 Wichtige Erinnerungen
 

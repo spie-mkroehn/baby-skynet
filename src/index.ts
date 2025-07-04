@@ -16,6 +16,7 @@ import { JobProcessor } from './jobs/JobProcessor.js';
 import { ChromaDBClient } from './vectordb/ChromaDBClient.js';
 import { Neo4jClient } from './vectordb/Neo4jClient.js';
 import { EmbeddingFactory } from './embedding/index.js';
+import { Logger } from './utils/Logger.js';
 
 
 /**
@@ -30,21 +31,33 @@ const __baby_skynet_version = 2.3
 const envPath = path.join(__dirname, '../.env');
 dotenv.config({ path: envPath });
 
+// Initialize logging FIRST
+Logger.initialize();
+Logger.separator(`Baby-SkyNet v${__baby_skynet_version} Startup`);
+Logger.info('Baby-SkyNet MCP Server starting...', { 
+  version: __baby_skynet_version,
+  envPath,
+  nodeVersion: process.version
+});
+
 // LLM Configuration
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
 let LLM_MODEL = 'llama3.1:latest'; // Default, wird von Args überschrieben
 
 // Debug: Check if API key is loaded
-console.error(`🔑 Debug - .env path: ${envPath}`);
-console.error(`🔑 Debug - ANTHROPIC_API_KEY loaded: ${process.env.ANTHROPIC_API_KEY ? 'Yes' : 'No'}`);
+Logger.debug('Environment check', { 
+  envPath,
+  hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+  anthropicKeyPrefix: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 8) + '...' : 'MISSING'
+});
 
 // Kommandozeilen-Parameter parsen
 function parseArgs(): { dbPath?: string; brainModel?: string; lancedbPath?: string } {
   const args = process.argv.slice(2);
   const result: { dbPath?: string; brainModel?: string; lancedbPath?: string } = {};
   
-  console.error(`🔍 Debug - Received args: ${JSON.stringify(args)}`);
+  Logger.debug('Parsing command line arguments', { argsCount: args.length, args });
   
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === '--db-path' || args[i] === '--dbpath') && i + 1 < args.length) {
@@ -61,10 +74,12 @@ function parseArgs(): { dbPath?: string; brainModel?: string; lancedbPath?: stri
     }
   }
   
-  // Debug
-  console.error(`🔍 Debug - Parsed dbPath: ${result.dbPath}`);
-  console.error(`🔍 Debug - Parsed brainModel: ${result.brainModel}`);
-  console.error(`🔍 Debug - Parsed lancedbPath: ${result.lancedbPath}`);
+  Logger.info('Command line arguments parsed', { 
+    dbPath: result.dbPath,
+    brainModel: result.brainModel,
+    lancedbPath: result.lancedbPath
+  });
+  
   return result;
 }
 
@@ -79,15 +94,27 @@ let neo4jClient: Neo4jClient | null = null;
 let analyzer: SemanticAnalyzer | null = null;
 
 // LLM Model und Provider konfigurieren
+Logger.separator('LLM Configuration');
 if (brainModel) {
   LLM_MODEL = brainModel;
   const provider = brainModel.startsWith('claude-') ? 'Anthropic' : 'Ollama';
-  console.error(`🧠 Brain Model: ${LLM_MODEL} (Provider: ${provider})`);
+  Logger.info('LLM model configured from arguments', { 
+    model: LLM_MODEL, 
+    provider,
+    baseUrl: provider === 'Anthropic' ? ANTHROPIC_BASE_URL : OLLAMA_BASE_URL
+  });
 } else {
-  console.error(`🧠 Brain Model: ${LLM_MODEL} (Default, Provider: Ollama)`);
+  Logger.info('Using default LLM model', { 
+    model: LLM_MODEL, 
+    provider: 'Ollama',
+    baseUrl: OLLAMA_BASE_URL
+  });
 }
 
+Logger.separator('Database Initialization');
 if (dbPath) {
+  Logger.info('Initializing database components', { dbPath });
+  
   memoryDb = new MemoryDatabase(dbPath);
   jobProcessor = new JobProcessor(memoryDb, LLM_MODEL);
   
@@ -95,33 +122,45 @@ if (dbPath) {
   analyzer = new SemanticAnalyzer(LLM_MODEL);
   memoryDb.analyzer = analyzer;
   
-  console.error(`✅ Database connected: ${dbPath}`);
-  console.error('🤖 JobProcessor initialized');
-  console.error('🧠 LLM Service linked to MemoryDatabase');
+  Logger.success('Core components initialized successfully', { 
+    database: 'MemoryDatabase',
+    jobProcessor: 'JobProcessor',
+    analyzer: 'SemanticAnalyzer',
+    dbPath
+  });
 } else {
-  console.error('❌ No --db-path specified');
+  Logger.error('Database initialization failed - no db-path specified');
 }
 
 // ChromaDB initialisieren (async)
 async function initializeChromaDB() {
   try {
+    Logger.separator('ChromaDB Initialization');
+    Logger.info('ChromaDB initialization starting...');
+    
     // Get collection name from ARGV
     const collectionName = process.argv
       .find(arg => arg.startsWith('--chroma-collection='))
       ?.split('=')[1] || 'claude-main';
     
+    Logger.info('Using ChromaDB collection', { collectionName });
+    
     chromaClient = new ChromaDBClient('http://localhost:8000', collectionName);
+    Logger.info('ChromaDBClient created, starting initialization...');
+    
     await chromaClient.initialize();
+    Logger.success('ChromaDB initialization completed successfully');
     
     // Link ChromaDB client to MemoryDatabase
     if (memoryDb) {
       memoryDb.chromaClient = chromaClient;
-      console.error('🎯 ChromaDB linked to MemoryDatabase');
+      Logger.info('ChromaDB linked to MemoryDatabase');
     }
     
-    console.error(`✅ ChromaDB connected: Collection "${collectionName}"`);
+    Logger.success(`ChromaDB connected: Collection "${collectionName}"`);
   } catch (error) {
-    console.error(`❌ ChromaDB initialization failed: ${error}`);
+    Logger.error(`ChromaDB initialization failed: ${error}`);
+    Logger.error('ChromaDB error details', error);
     chromaClient = null;
   }
 }
@@ -129,6 +168,9 @@ async function initializeChromaDB() {
 // Neo4j initialisieren (async)
 async function initializeNeo4j() {
   try {
+    Logger.separator('Neo4j Initialization');
+    Logger.info('Neo4j initialization starting...');
+    
     // Get Neo4j configuration from environment variables or use defaults
     const neo4jConfig = {
       uri: process.env.NEO4J_URL || 'bolt://localhost:7687',
@@ -137,28 +179,40 @@ async function initializeNeo4j() {
       database: process.env.NEO4J_DATABASE || 'neo4j'
     };
     
+    Logger.info('Using Neo4j configuration', { uri: neo4jConfig.uri, database: neo4jConfig.database });
+    
     neo4jClient = new Neo4jClient(neo4jConfig);
     
     // Link Neo4j client to MemoryDatabase
     if (memoryDb) {
       memoryDb.neo4jClient = neo4jClient;
-      console.error('🕸️ Neo4j linked to MemoryDatabase');
+      Logger.info('Neo4j linked to MemoryDatabase');
     }
     
-    console.error(`✅ Neo4j connected: ${neo4jConfig.uri}`);
+    Logger.success(`Neo4j connected: ${neo4jConfig.uri}`);
   } catch (error) {
-    console.error(`❌ Neo4j initialization failed: ${error}`);
+    Logger.error(`Neo4j initialization failed: ${error}`);
+    Logger.error('Neo4j error details', error);
     neo4jClient = null;
   }
 }
 
 // Server erstellen
+Logger.separator('MCP Server Setup');
 const server = new Server({
   name: 'skynet-home-edition-mcp',
   version: '2.1.0',
 });
 
+Logger.info('MCP Server created', { 
+  name: 'skynet-home-edition-mcp',
+  version: '2.1.0',
+  sdkVersion: '@modelcontextprotocol/sdk'
+});
+
 // Tools definieren
+Logger.info('Registering MCP tool handlers', { toolCount: 'calculating...' });
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = [
       {
@@ -487,24 +541,41 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: 'Statistiken über das Graph-Netzwerk der Memories',
         inputSchema: { type: 'object', properties: {} },
       },
+      {
+        name: 'read_system_logs',
+        description: '📋 Baby-SkyNet System-Logs anzeigen (für Debugging und Diagnostik)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            lines: { type: 'number', description: 'Anzahl der letzten Zeilen (Standard: 50)', default: 50 },
+            filter: { type: 'string', description: 'Filter für bestimmte Log-Level (INFO, WARN, ERROR, DEBUG, SUCCESS)' },
+          },
+        },
+      },
     ];
   
+  Logger.info('MCP tool handlers registered', { toolCount: tools.length });
   return { tools };
 });
 
 // Tool-Aufrufe verarbeiten
+Logger.info('Setting up MCP tool call handler');
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  
+  Logger.debug('Tool call received', { toolName: name, hasArgs: !!args });
 
   switch (name) {
     case 'memory_status':
+      Logger.debug('Executing memory_status tool');
       const dbStatus = memoryDb ? '✅ Connected' : '❌ Not Connected';
       
       if (!memoryDb) {
         return {
           content: [{
             type: 'text',
-            text: `📊 SkyNet Home Edition v2.3 - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 LLM Integration: Waiting for DB\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available`,
+            text: `📊 Baby SkyNet - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 LLM Integration: Waiting for DB\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available`,
           }],
         };
       }
@@ -810,6 +881,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
     case 'save_new_memory':
+      Logger.info('Save new memory tool called', { 
+        category: args?.category, 
+        topic: typeof args?.topic === 'string' ? args.topic.substring(0, 50) + '...' : 'undefined',
+        hasContent: !!args?.content
+      });
+      
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
@@ -874,6 +951,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
     case 'search_memories_advanced':
+      Logger.info('Advanced search tool called', { 
+        query: typeof args?.query === 'string' ? args.query.substring(0, 50) + '...' : 'undefined',
+        categories: args?.categories,
+        hasCategories: !!(args?.categories && Array.isArray(args.categories))
+      });
+      
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
@@ -1419,6 +1502,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Fehler beim Ausführen der Special Directive: ${error}` }] };
       }
 
+    case 'read_system_logs':
+      try {
+        const lines = (args?.lines as number) || 50;
+        const filter = args?.filter as string;
+        
+        // Read log file
+        const logFile = path.join(__dirname, '../baby_skynet.log');
+        let logContent: string;
+        
+        try {
+          logContent = await readFile(logFile, 'utf8');
+        } catch (error) {
+          return { content: [{ type: 'text', text: `📋 Baby-SkyNet System Logs\n\n❌ Log-Datei nicht gefunden: ${logFile}\n\nMöglicherweise wurde der Server noch nicht gestartet oder das Logging ist noch nicht initialisiert.` }] };
+        }
+        
+        // Split into lines and filter
+        let logLines = logContent.split('\n').filter(line => line.trim());
+        
+        // Apply filter if specified
+        if (filter) {
+          const filterUpper = filter.toUpperCase();
+          logLines = logLines.filter(line => line.includes(filterUpper));
+        }
+        
+        // Get last N lines
+        const relevantLines = logLines.slice(-lines);
+        
+        // Format output
+        const logOutput = relevantLines.join('\n');
+        const totalLines = logLines.length;
+        const filterText = filter ? ` (gefiltert nach ${filter})` : '';
+        
+        return {
+          content: [{
+            type: 'text',
+            text: `📋 Baby-SkyNet System Logs${filterText}\n\n📊 Zeige letzte ${relevantLines.length} von ${totalLines} Log-Einträgen:\n\n${'='.repeat(80)}\n${logOutput}\n${'='.repeat(80)}\n\n📁 Log-Datei: ${logFile}`
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `❌ Fehler beim Lesen der Logs: ${error}` }] };
+      }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -1426,18 +1551,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Server starten
 async function main() {
+  Logger.separator('Server Startup Sequence');
+  Logger.info('Starting server initialization sequence...');
+  
   // ChromaDB initialisieren
+  Logger.info('Phase 1: Initializing ChromaDB...');
   await initializeChromaDB();
+  
   // Neo4j initialisieren
+  Logger.info('Phase 2: Initializing Neo4j...');
   await initializeNeo4j();
   
+  // MCP Transport setup
+  Logger.info('Phase 3: Setting up MCP transport...');
   const transport = new StdioServerTransport();
+  
+  Logger.info('Phase 4: Connecting MCP server...');
   await server.connect(transport);
-  console.error('🤖 SkyNet Home Edition v2.3 MCP Server running...');
-  console.error('🧠 Memory Management + Multi-Provider Semantic Analysis + Graph Database ready!');
+  
+  Logger.success('Baby-SkyNet MCP Server v2.3 fully operational!');
+  Logger.success('Memory Management + Multi-Provider Semantic Analysis + Graph Database ready!');
+  Logger.info('Server status', {
+    version: __baby_skynet_version,
+    database: !!memoryDb,
+    chromadb: !!chromaClient,
+    neo4j: !!neo4jClient,
+    jobProcessor: !!jobProcessor,
+    analyzer: !!analyzer,
+    llmModel: LLM_MODEL
+  });
 }
 
 main().catch((error) => {
-  console.error('Server error:', error);
+  Logger.error('Server startup failed', error);
   process.exit(1);
 });

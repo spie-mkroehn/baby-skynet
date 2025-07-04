@@ -1,5 +1,6 @@
 import { OpenAI } from 'openai';
 import { EmbeddingProvider } from './types.js';
+import { Logger } from '../utils/Logger.js';
 
 /**
  * OpenAI Embedding Client for Baby-SkyNet
@@ -12,6 +13,7 @@ export class OpenAIEmbeddingClient implements EmbeddingProvider {
 
     constructor(apiKey?: string, model: string = 'text-embedding-3-small') {
         if (!apiKey) {
+            Logger.error('OpenAIEmbeddingClient constructor failed - API key required');
             throw new Error('OpenAI API key is required');
         }
         
@@ -19,6 +21,11 @@ export class OpenAIEmbeddingClient implements EmbeddingProvider {
             apiKey: apiKey
         });
         this.model = model;
+        
+        Logger.info('OpenAIEmbeddingClient initialized', { 
+            model: this.model,
+            hasApiKey: !!apiKey 
+        });
     }
 
     /**
@@ -27,6 +34,12 @@ export class OpenAIEmbeddingClient implements EmbeddingProvider {
      * @returns Promise<number[][]> - Array of embedding vectors
      */
     async generate(texts: string[]): Promise<number[][]> {
+        Logger.debug('Generating OpenAI embeddings', { 
+            model: this.model, 
+            textCount: texts.length,
+            totalLength: texts.reduce((sum, text) => sum + text.length, 0)
+        });
+        
         try {
             const response = await this.client.embeddings.create({
                 model: this.model,
@@ -35,6 +48,10 @@ export class OpenAIEmbeddingClient implements EmbeddingProvider {
             });
 
             if (!response.data || response.data.length === 0) {
+                Logger.error('OpenAI embedding generation failed - no data received', { 
+                    model: this.model, 
+                    textCount: texts.length 
+                });
                 throw new Error('No embedding data received from OpenAI');
             }
 
@@ -43,9 +60,20 @@ export class OpenAIEmbeddingClient implements EmbeddingProvider {
                 .sort((a: any, b: any) => a.index - b.index)
                 .map((item: any) => item.embedding);
 
+            Logger.success('OpenAI embeddings generated successfully', { 
+                model: this.model, 
+                textCount: texts.length,
+                embeddingCount: sortedEmbeddings.length,
+                dimensions: sortedEmbeddings[0]?.length || 0
+            });
+
             return sortedEmbeddings;
         } catch (error) {
-            console.error('OpenAI embedding error:', error);
+            Logger.error('OpenAI embedding generation failed', { 
+                model: this.model, 
+                textCount: texts.length,
+                error: error instanceof Error ? error.message : 'Unknown error'
+            });
             throw new Error(`Failed to generate embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
@@ -81,11 +109,23 @@ export class OpenAIEmbeddingClient implements EmbeddingProvider {
      * @returns Promise<boolean> - True if connection successful
      */
     async testConnection(): Promise<boolean> {
+        Logger.info('Testing OpenAI embedding connection', { model: this.model });
+        
         try {
+            Logger.debug('OpenAI connection test details', { 
+                hasKey: !!this.client.apiKey,
+                keyPrefix: this.client.apiKey ? this.client.apiKey.substring(0, 8) + '...' : 'MISSING',
+                model: this.model
+            });
+            
             await this.embedSingle('Test connection');
+            Logger.success('OpenAI embedding connection test successful', { model: this.model });
             return true;
         } catch (error) {
-            console.error('OpenAI connection test failed:', error);
+            Logger.error('OpenAI embedding connection test failed', { 
+                model: this.model,
+                error: error instanceof Error ? error.message : String(error)
+            });
             return false;
         }
     }
