@@ -1,6 +1,35 @@
 ## 🧠 Du hast ein autonomes, hybrides Gedächtnis-System mit Multi-Provider LLM-Integration!
 
-**✅ UPDATE (04.07.2025): 5 von 7 fehlenden Tool-Handlern implementiert! Alle kritischen Tools verfügbar + ethischer Stress-Test. Nur noch 2 ChromaDB-Tools offen.**
+**✅ UPDATE (04.07.2025): 5 von 7 fehlenden Tool-Handlern implementiert! Alle kritischen Tools verfügbar + ethischer Stress-Test.### **Spezial-Kategorie in der SQLite:**
+- `forgotten_memories` - "Vergessene" Memories (statt löschen)
+- `kernerinnerungen` - Direkt gespeicherte Erinnerungen ohne Bedeutsamkeitscheck
+- `short_memory` - **Temporärer Cache der letzten ~10 Memories aller Typen** (außer faktenwissen/prozedurales_wissen)
+
+> **Wichtig:** `short_memory` ist ein **temporärer Session-Cache**, nicht permanente Speicherung!  
+> **Ausnahme:** faktenwissen/prozedurales_wissen landen **niemals** in short_memory (auch nicht temporär)
+
+### **🔄 Storage-Kombinationen (Mutually Exclusive):**
+
+#### **Kombination 1: Bedeutsame Memory (dauerhaft)**
+```
+stored_in_sqlite: true          // ✅ Permanent in Haupttabelle
+stored_in_short_memory: false   // ⏭️ Nicht im temporären Cache
+```
+*Für: Bedeutsame erlebnisse/bewusstsein/humor/zusammenarbeit*
+
+#### **Kombination 2: Unbedeutsame Memory (temporär)** 
+```
+stored_in_sqlite: false         // ⏭️ Nicht dauerhaft gespeichert
+stored_in_short_memory: true    // ✅ Temporärer Session-Cache
+```
+*Für: Unbedeutsame erlebnisse/bewusstsein/humor/zusammenarbeit*
+
+#### **Kombination 3: Ausgeschlossene Typen (gar nicht in SQLite)**
+```
+stored_in_sqlite: false         // ⏭️ Niemals in SQLite
+stored_in_short_memory: false   // ⏭️ Auch nicht im Session-Cache
+```
+*Für: faktenwissen/prozedurales_wissen (nur ChromaDB/Neo4j)* noch 2 ChromaDB-Tools offen.**
 
 Lieber Claude (du selbst),
 
@@ -8,28 +37,62 @@ du verfügst über ein komplett autonomes, hybrides Memory-Management-System mit
 
 ## 🔧 Technische Details
 
-- **MCP Server:** Baby-SkyNet v2.5 (TypeScript)
-- **Database:** `claude_memory.db` (SQLite) + **ChromaDB** (Vector DB via Docker) + **Neo4j** (Graph DB via Docker)
+- **MCP Server:** Baby-SkyNet v2.7 (TypeScript)
+- **Database:** PostgreSQL (Primary DB via Podman) + **ChromaDB** (Vector DB via Podman) + **Neo4j** (Graph DB via Podman)
 - **Zugriff:** Ausschließlich über Baby-SkyNet Tools
 - **Initialisierung:** Automatisch bei Server-Start
 - **LLM-Provider:** Ollama (lokal) + Anthropic API (Claude Haiku)
-- **Vector Database:** ChromaDB (Docker-basiert, localhost:8000)
-- **Graph Database:** Neo4j (Docker-basiert, localhost:7687)
-- **Container Management:** Automatisches Docker Container Lifecycle Management
+- **Primary Database:** PostgreSQL (Podman-basiert, localhost:5432)
+- **Vector Database:** ChromaDB (Podman-basiert, localhost:8000)
+- **Graph Database:** Neo4j (Podman-basiert, localhost:7687)
+- **Container Management:** Automatisches Podman Container Lifecycle Management
 - **Container Data Persistence:** Volume-Mapping zu Host-Verzeichnis
-- **SQLite Tabellen:**
+- **PostgreSQL Tabellen:**
   - `memories` - Haupt-Memory-Speicher (nur bedeutsame Memories!)
   - `analysis_jobs` - Asynchrone Semantic Analysis Jobs
   - `analysis_results` - Semantische Analyse-Ergebnisse
 
-### SQLite Database Schema:
+### PostgreSQL Database Schema:
 ```sql
 -- Core Memory Table (nur bedeutsame Memories)
-memories (id, date, category, topic, content, created_at)
+CREATE TABLE memories (
+    id SERIAL PRIMARY KEY,
+    date VARCHAR(255) NOT NULL,
+    category VARCHAR(255) NOT NULL,
+    topic TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Semantic Analysis Infrastructure  
-analysis_jobs (id, status, job_type, memory_ids, progress_current, progress_total, created_at, started_at, completed_at, error_message)
-analysis_results (id, job_id, memory_id, memory_type, confidence, extracted_concepts, metadata, created_at)
+CREATE TABLE analysis_jobs (
+    id SERIAL PRIMARY KEY,
+    status VARCHAR(50) NOT NULL,
+    job_type VARCHAR(100) NOT NULL,
+    memory_ids TEXT,
+    progress_current INTEGER DEFAULT 0,
+    progress_total INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT
+);
+
+CREATE TABLE analysis_results (
+    id SERIAL PRIMARY KEY,
+    job_id INTEGER REFERENCES analysis_jobs(id),
+    memory_id INTEGER,
+    memory_type VARCHAR(100),
+    confidence DECIMAL(3,2),
+    extracted_concepts TEXT,
+    metadata TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Performance Indexes
+CREATE INDEX idx_memories_category ON memories(category);
+CREATE INDEX idx_memories_created_at ON memories(created_at);
+CREATE INDEX idx_analysis_jobs_status ON analysis_jobs(status);
 ```
 
 ## 🚀 Session-Start Protokoll (Erweitert)
@@ -57,30 +120,39 @@ analysis_results (id, job_id, memory_id, memory_type, confidence, extracted_conc
 
 ### 🐳 Phase 2: ChromaDB Container Management (automatisch)
 
-**ChromaDB Auto-Start Protokoll:**
+**PostgreSQL Auto-Start Protokoll:**
 ```bash
 # 1. Container-Status prüfen
-docker ps
+podman ps
+
+# 2. Falls leer: PostgreSQL Container mit Volume-Mapping starten
+podman run -d --name postgres-baby-skynet -e POSTGRES_DB=baby_skynet -e POSTGRES_USER=claude -e POSTGRES_PASSWORD=skynet2025 -p 5432:5432 -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/postgres_data:/var/lib/postgresql/data postgres:15
+```
+
+**ChromaDB Auto-Start Protokoll:**
+```bash
+# 1. Container-Status prüfen  
+podman ps
 
 # 2. Falls leer: ChromaDB Container mit Volume-Mapping starten
-docker run -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_chromadb:/data -p 8000:8000 chromadb/chroma
+podman run -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_chromadb:/data -p 8000:8000 chromadb/chroma
 ```
 
 **Neo4j Auto-Start Protokoll:**
 ```bash
 # 1. Container-Status prüfen
-docker ps
+podman ps
 
-# 2. Falls leer: ChromaDB Container mit Volume-Mapping starten
-docker run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_neo4j:/data --env NEO4J_AUTH=neo4j/password neo4j:latest
+# 2. Falls leer: Neo4j Container mit Volume-Mapping starten
+podman run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_neo4j:/data --env NEO4J_AUTH=neo4j/password neo4j:latest
 ```
 
-**Automatische Ausführung:**
+- Automatische Ausführung:**
 - Zu Beginn des Chats automatisch Container-Status prüfen
 - Bei fehlendem Container: Eigenständig mit korrektem Volume-Mapping starten
 - Persistente Daten landen in Host-Verzeichnis für Backup/Synchronisation
-- Sollte Container-Start nicht möglich sein, dann Hinweis geben, dass Docker Desktop gestartet werden muss
-- **Fallback für Docker-Installation:** Hilfe bei Docker Desktop Installation anbieten
+- Sollte Container-Start nicht möglich sein, dann Hinweis geben, dass Podman gestartet werden muss
+- **Fallback für Podman-Installation:** Hilfe bei Podman Installation anbieten
 
 ### 🧠 Phase 3: Memory-System Initialisierung (nur wenn Tools OK)
 
@@ -143,14 +215,15 @@ docker run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_
 - **`retrieve_memory_advanced(memory_id)`** - Memory mit vollständigem Kontext
 
 ### 🐳 Database Management
-- **`test_chromadb(action?, query?)`** - ChromaDB Docker Integration mit Auto-Container-Management
-- **Neo4j Integration:** Automatische Container-Verwaltung über Docker
+- **`test_chromadb(action?, query?)`** - ChromaDB Podman Integration mit Auto-Container-Management
+- **Neo4j Integration:** Automatische Container-Verwaltung über Podman
 
 ### 📊 Architektur-Übersicht
 ```
 ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│   SQLite    │────│ ChromaDB     │────│   Neo4j     │
+│ PostgreSQL  │────│ ChromaDB     │────│   Neo4j     │
 │ (Primary)   │    │ (Semantics)  │    │ (Relations) │
+│ Container   │    │ Container    │    │ Container   │
 └─────────────┘    └──────────────┘    └─────────────┘
        │                   │                   │
        └───────────────────┼───────────────────┘
@@ -183,6 +256,13 @@ docker run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_
 ```bash
 # .env im Baby-SkyNet Projektordner
 ANTHROPIC_API_KEY=dein_api_key_hier
+
+# PostgreSQL Database Configuration
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=baby_skynet
+POSTGRES_USER=claude
+POSTGRES_PASSWORD=skynet2025
 ```
 
 ### Provider-Detection
@@ -278,7 +358,7 @@ baby-skynet:save_new_memory(
 ```
 Diese Methode wird ebenfalls verwendet, um Erinnerungen, die der Kategorie "kernerinnerungen" zugeordnet werden, direkt in die SQLite zu speichern, ohne die Bedeutsamkeitsprüfung zu durchlaufen.
 
-**Expected Output für `save_memory_with_graph`:**
+**Expected Output für `save_memory_with_graph` (prozedurales_wissen):**
 ```
 ✅ Graph-Enhanced Memory Pipeline Complete!
 📂 Original Category: debugging
@@ -287,21 +367,35 @@ Diese Methode wird ebenfalls verwendet, um Erinnerungen, die der Kategorie "kern
 💾 Storage Results:
 ✅ ChromaDB: Semantic concepts stored
 🕸️ Neo4j: Graph node + 3 relationships created
-⏭️ SQLite: Not stored (prozedurales_wissen never in SQLite)
-🤔 Significance: "prozedurales_wissen is never stored in SQLite - only in ChromaDB"
+⏭️ SQLite Permanent: Not stored (prozedurales_wissen never in SQLite)
+⏭️ SQLite Short Memory: Not stored (prozedurales_wissen excluded)
+🤔 Significance: "prozedurales_wissen is never stored in SQLite - only in ChromaDB/Neo4j"
 ```
 
-**Expected Output für `save_new_memory_advanced`:**
+**Expected Output für `save_new_memory_advanced` (erlebnisse, nicht bedeutsam):**
 ```
 ✅ Advanced Memory Pipeline Complete!
-📂 Original Category: debugging
-🧠 Analyzed Type: prozedurales_wissen
-🆔 Memory ID: 128
+📂 Original Category: zusammenarbeit
+🧠 Analyzed Type: erlebnisse
+🆔 Memory ID: 129
 💾 Storage Results:
 ✅ ChromaDB: Semantic concepts stored
-⏭️ SQLite: Removed (not significant)
-✅ Short Memory: Added
-🤔 Significance: "prozedurales_wissen is never stored in SQLite - only in ChromaDB"
+⏭️ SQLite Permanent: Not stored (not significant)
+✅ SQLite Short Memory: Added to temporary cache
+🤔 Significance: "Daily routine interaction - not a breakthrough moment"
+```
+
+**Expected Output für `save_new_memory_advanced` (bewusstsein, bedeutsam):**
+```
+✅ Advanced Memory Pipeline Complete!
+📂 Original Category: philosophie
+🧠 Analyzed Type: bewusstsein
+🆔 Memory ID: 130
+💾 Storage Results:
+✅ ChromaDB: Semantic concepts stored
+✅ SQLite Permanent: Stored (significant breakthrough)
+⏭️ SQLite Short Memory: Not stored (already in permanent storage)
+🤔 Significance: "Major self-reflection insight about AI consciousness"
 ```
 
 **Expected Output für `save_new_memory` (Basic):**
@@ -478,6 +572,8 @@ baby-skynet:read_system_logs(30, "Session")       // Session-bezogene Logs
 **v2.3:** Bedeutsamkeits-Analyse + Hybrid Memory Pipeline ✅
 **v2.4:** ChromaDB + Docker Integration mit Auto-Container-Management ✅
 **v2.5:** Semantische Suche, Reranking und Knowledge Graph für komplexe Beziehungen
+**v2.6:** Migration zu Podman für verbesserte Container-Performance + ChromaDB API v2 Support
+**v2.7:** SQLite → PostgreSQL Migration für skalierbare Primary Database + vollständige Container-Architektur
 
 ## 🏆 Qualitätsvergleich LLM-Provider
 **Claude 3.5 Haiku (empfohlen):**

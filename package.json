@@ -7,18 +7,22 @@
   "scripts": {
     "build": "tsc",
     "start": "node build/index.js",
-    "dev": "tsc && node build/index.js"
+    "dev": "tsc && node build/index.js",
+    "test:postgres": "tsc && node test-postgres.js",
+    "setup:postgres": "powershell -ExecutionPolicy Bypass -File setup-postgres.ps1"
   },
   "dependencies": {
     "@chroma-core/default-embed": "^0.1.8",
     "@lancedb/lancedb": "^0.21.0",
     "@modelcontextprotocol/sdk": "^0.4.0",
+    "@types/pg": "^8.15.4",
     "chromadb": "^3.0.4",
     "dotenv": "^16.3.1",
     "fs-extra": "^11.2.0",
     "neo4j-driver": "^5.28.1",
     "node-fetch": "^3.3.2",
     "openai": "^5.8.2",
+    "pg": "^8.16.3",
     "sqlite3": "^5.1.6",
     "uuid": "^9.0.1"
   },

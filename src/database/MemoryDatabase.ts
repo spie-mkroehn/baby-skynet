@@ -327,10 +327,23 @@ export class MemoryDatabase {
       let shouldKeepInSQLite = false;
       let significanceReason = '';
       
+      Logger.info('Memory type routing decision', { 
+        memoryId, 
+        memoryType, 
+        category,
+        isFactualOrProcedural: ['faktenwissen', 'prozedurales_wissen'].includes(memoryType)
+      });
+      
       if (['faktenwissen', 'prozedurales_wissen'].includes(memoryType)) {
         // These types are NEVER stored in SQLite
         shouldKeepInSQLite = false;
         significanceReason = `${memoryType} is never stored in SQLite - only in LanceDB`;
+        Logger.info('Memory type routing: SQLite exclusion', { 
+          memoryId, 
+          memoryType, 
+          shouldKeepInSQLite,
+          reason: significanceReason
+        });
       } else {
         // For erlebnisse, bewusstsein, humor - check significance
         const significanceResult = await this.analyzer!.evaluateSignificance(savedMemory, memoryType);
@@ -340,12 +353,31 @@ export class MemoryDatabase {
         
         shouldKeepInSQLite = significanceResult.significant!;
         significanceReason = significanceResult.reason!;
+        Logger.info('Memory type routing: Significance evaluation', { 
+          memoryId, 
+          memoryType, 
+          shouldKeepInSQLite,
+          significant: significanceResult.significant,
+          reason: significanceReason
+        });
       }
       
       // Step 4: SQLite management based on significance
+      Logger.info('SQLite management decision', { 
+        memoryId, 
+        shouldKeepInSQLite, 
+        willDelete: !shouldKeepInSQLite 
+      });
+      
       if (!shouldKeepInSQLite) {
         // Remove from SQLite if not significant
+        Logger.warn('Removing memory from SQLite (not significant or wrong type)', { 
+          memoryId, 
+          memoryType, 
+          reason: significanceReason 
+        });
         await this.deleteMemory(memoryId);
+        Logger.success('Memory removed from SQLite successfully', { memoryId });
       } else {
         // Keep in SQLite but potentially move to analyzed category
         if (memoryType !== category && this.mapMemoryTypeToCategory(memoryType) !== category) {
@@ -354,21 +386,35 @@ export class MemoryDatabase {
         }
       }
       
-      // Step 5: Short Memory (only if NOT stored as Core Memory)
+      // Step 5: Short Memory (only if NOT stored as Core Memory AND NOT faktenwissen/prozedurales_wissen)
       if (!shouldKeepInSQLite) {
-        await this.addToShortMemory({
-          topic: topic,
-          content: content,
-          date: new Date().toISOString().split('T')[0]
-        });
+        // CRITICAL FIX: Never add faktenwissen/prozedurales_wissen to short_memory in SQLite
+        if (!['faktenwissen', 'prozedurales_wissen'].includes(memoryType)) {
+          Logger.info('Adding to short memory (allowed memory type)', { 
+            memoryId, 
+            memoryType, 
+            willAddToShortMemory: true 
+          });
+          await this.addToShortMemory({
+            topic: topic,
+            content: content,
+            date: new Date().toISOString().split('T')[0]
+          });
+        } else {
+          Logger.info('Skipping short memory for excluded type', { 
+            memoryId, 
+            memoryType, 
+            reason: 'faktenwissen/prozedurales_wissen never stored in SQLite' 
+          });
+        }
       }
       
       return {
         success: true,
         memory_id: memoryId,
-        stored_in_sqlite: shouldKeepInSQLite,
+        stored_in_sqlite: shouldKeepInSQLite, // True if kept in main table, false if deleted
         stored_in_lancedb: true,
-        stored_in_short_memory: !shouldKeepInSQLite,
+        stored_in_short_memory: !shouldKeepInSQLite && !['faktenwissen', 'prozedurales_wissen'].includes(memoryType),
         analyzed_category: memoryType,
         significance_reason: significanceReason
       };
@@ -1604,6 +1650,7 @@ Return only the number (e.g., 0.85).
     stored_in_sqlite?: boolean;
     stored_in_chroma?: boolean;
     stored_in_neo4j?: boolean;
+    stored_in_short_memory?: boolean;
     relationships_created?: number;
     analyzed_category?: string;
     significance_reason?: string;
@@ -1618,6 +1665,15 @@ Return only the number (e.g., 0.85).
     });
     
     try {
+      // CRITICAL FIX: Save memory data BEFORE advanced processing (which may delete from SQLite)
+      const originalMemoryData = {
+        category,
+        topic,
+        content,
+        date: new Date().toISOString().split('T')[0],
+        created_at: new Date().toISOString()
+      };
+      
       // Use the existing advanced save pipeline first
       const saveResult = await this.saveNewMemoryAdvanced(category, topic, content);
       
@@ -1633,21 +1689,40 @@ Return only the number (e.g., 0.85).
       if (this.neo4jClient && saveResult.memory_id) {
         Logger.info('Step: Neo4j graph storage...', { memoryId: saveResult.memory_id });
         try {
-          const savedMemory = await this.getMemoryById(saveResult.memory_id);
+          // CRITICAL FIX: Use original data instead of trying to re-fetch from SQLite
+          // (memory might have been deleted from SQLite due to routing rules)
+          let memoryForNeo4j: any;
+          
+          try {
+            // Try to get from SQLite first (if it's still there)
+            memoryForNeo4j = await this.getMemoryById(saveResult.memory_id);
+            Logger.debug('Memory retrieved from SQLite for Neo4j', { memoryId: saveResult.memory_id });
+          } catch (error) {
+            // If not in SQLite (due to routing), use original data with generated ID
+            Logger.warn('Memory not found by ID - using original data for Neo4j', { 
+              memoryId: saveResult.memory_id,
+              reason: 'Memory was removed from SQLite due to routing rules'
+            });
+            memoryForNeo4j = {
+              id: saveResult.memory_id,
+              ...originalMemoryData,
+              metadata: { analyzed_category: saveResult.analyzed_category }
+            };
+          }
           
           // Create memory node in Neo4j
           await this.neo4jClient.createMemoryNode({
-            id: savedMemory.id,
-            content: savedMemory.content,
-            category: savedMemory.category,
-            topic: savedMemory.topic,
-            date: savedMemory.date,
-            created_at: savedMemory.created_at,
+            id: memoryForNeo4j.id,
+            content: memoryForNeo4j.content,
+            category: memoryForNeo4j.category,
+            topic: memoryForNeo4j.topic,
+            date: memoryForNeo4j.date,
+            created_at: memoryForNeo4j.created_at,
             metadata: { analyzed_category: saveResult.analyzed_category }
           });
 
           neo4jStored = true;
-          Logger.success('Neo4j memory node created', { memoryId: savedMemory.id });
+          Logger.success('Neo4j memory node created', { memoryId: memoryForNeo4j.id });
 
           // Create explicit relationships if provided
           if (forceRelationships && forceRelationships.length > 0) {
@@ -1655,20 +1730,20 @@ Return only the number (e.g., 0.85).
             for (const rel of forceRelationships) {
               try {
                 await this.neo4jClient.createRelationship(
-                  savedMemory.id.toString(),
+                  memoryForNeo4j.id.toString(),
                   rel.targetMemoryId.toString(),
                   rel.relationshipType,
                   rel.properties || {}
                 );
                 relationshipsCreated++;
                 Logger.debug('Explicit relationship created', { 
-                  from: savedMemory.id, 
+                  from: memoryForNeo4j.id, 
                   to: rel.targetMemoryId, 
                   type: rel.relationshipType 
                 });
               } catch (error) {
                 Logger.error('Failed to create explicit relationship', { 
-                  from: savedMemory.id, 
+                  from: memoryForNeo4j.id, 
                   to: rel.targetMemoryId, 
                   type: rel.relationshipType, 
                   error 
@@ -1678,7 +1753,7 @@ Return only the number (e.g., 0.85).
           } else {
             // Auto-detect relationships using semantic similarity
             Logger.info('Auto-detecting semantic relationships...');
-            const autoRelationships = await this.detectSemanticRelationships(savedMemory);
+            const autoRelationships = await this.detectSemanticRelationships(memoryForNeo4j);
             relationshipsCreated = autoRelationships;
           }
           
@@ -1705,6 +1780,7 @@ Return only the number (e.g., 0.85).
         storedInSqlite: result.stored_in_sqlite,
         storedInChroma: result.stored_in_chroma,
         storedInNeo4j: result.stored_in_neo4j,
+        storedInShortMemory: result.stored_in_short_memory,
         relationshipsCreated: result.relationships_created
       });
 

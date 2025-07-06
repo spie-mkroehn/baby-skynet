@@ -11,6 +11,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { MemoryDatabase } from './database/MemoryDatabase.js';
+import { DatabaseFactory, IMemoryDatabase } from './database/DatabaseFactory.js';
 import { SemanticAnalyzer } from './llm/SemanticAnalyzer.js';
 import { JobProcessor } from './jobs/JobProcessor.js';
 import { ChromaDBClient } from './vectordb/ChromaDBClient.js';
@@ -87,7 +88,7 @@ function parseArgs(): { dbPath?: string; brainModel?: string; lancedbPath?: stri
 const { dbPath, brainModel, lancedbPath } = parseArgs();
 
 // Global instances
-let memoryDb: MemoryDatabase | null = null;
+let memoryDb: any = null;  // Using any for compatibility with existing code
 let jobProcessor: JobProcessor | null = null;
 let chromaClient: ChromaDBClient | null = null;
 let neo4jClient: Neo4jClient | null = null;
@@ -112,25 +113,8 @@ if (brainModel) {
 }
 
 Logger.separator('Database Initialization');
-if (dbPath) {
-  Logger.info('Initializing database components', { dbPath });
-  
-  memoryDb = new MemoryDatabase(dbPath);
-  jobProcessor = new JobProcessor(memoryDb, LLM_MODEL);
-  
-  // Initialize LLM Service and link to MemoryDatabase
-  analyzer = new SemanticAnalyzer(LLM_MODEL);
-  memoryDb.analyzer = analyzer;
-  
-  Logger.success('Core components initialized successfully', { 
-    database: 'MemoryDatabase',
-    jobProcessor: 'JobProcessor',
-    analyzer: 'SemanticAnalyzer',
-    dbPath
-  });
-} else {
-  Logger.error('Database initialization failed - no db-path specified');
-}
+// Database initialization will be done async later in main function
+Logger.info('Database initialization will be performed asynchronously');
 
 // ChromaDB initialisieren (async)
 async function initializeChromaDB() {
@@ -183,17 +167,29 @@ async function initializeNeo4j() {
     
     neo4jClient = new Neo4jClient(neo4jConfig);
     
+    // IMPORTANT: Actually connect to Neo4j and verify connectivity
+    Logger.info('Connecting to Neo4j database...');
+    await neo4jClient.connect();
+    Logger.success('Neo4j connectivity verified successfully');
+    
+    // Create database indexes for optimal performance
+    Logger.info('Creating Neo4j database indexes...');
+    await neo4jClient.createIndex();
+    Logger.success('Neo4j indexes created successfully');
+    
     // Link Neo4j client to MemoryDatabase
     if (memoryDb) {
       memoryDb.neo4jClient = neo4jClient;
       Logger.info('Neo4j linked to MemoryDatabase');
     }
     
-    Logger.success(`Neo4j connected: ${neo4jConfig.uri}`);
+    Logger.success(`Neo4j fully operational: ${neo4jConfig.uri}`);
   } catch (error) {
     Logger.error(`Neo4j initialization failed: ${error}`);
     Logger.error('Neo4j error details', error);
     neo4jClient = null;
+    // Don't throw error - let system continue without Neo4j
+    Logger.warn('Continuing without Neo4j - graph features will be unavailable');
   }
 }
 
@@ -581,9 +577,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       
       try {
-        const llmStatus = jobProcessor ? await jobProcessor.testLLMConnection() : { status: 'error', error: 'No processor' };
-        const categories = await memoryDb.listCategories();
-        const totalMemories = categories.reduce((sum, cat) => sum + cat.count, 0);
+        const db = safeGetMemoryDb();
+        const processor = safeGetJobProcessor();
+        
+        const llmStatus = await processor.testLLMConnection();
+        const categories = await db.listCategories!();
+        const totalMemories = categories.reduce((sum: number, cat: any) => sum + cat.count, 0);
         const categoryCount = categories.length;
         
         const llmStatusText = llmStatus.status === 'ready' ? '✅ Ready' : 
@@ -592,9 +591,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         // Get ChromaDB statistics
         let chromaDBInfo = '❌ Not Available';
-        if (memoryDb.chromaClient) {
+        if (db.chromaClient) {
           try {
-            const chromaInfo = await memoryDb.chromaClient.getCollectionInfo();
+            const chromaInfo = await db.chromaClient.getCollectionInfo();
             if (chromaInfo.initialized) {
               chromaDBInfo = `✅ ${chromaInfo.count} concepts (${chromaInfo.embedding_provider})`;
             } else {
@@ -607,9 +606,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         // Get Neo4j statistics  
         let neo4jInfo = '❌ Not Available';
-        if (memoryDb.neo4jClient) {
+        if (db.neo4jClient) {
           try {
-            const graphStats = await memoryDb.getGraphStatistics();
+            const graphStats = await db.getGraphStatistics!();
             if (graphStats.success) {
               neo4jInfo = `✅ ${graphStats.total_nodes} nodes, ${graphStats.total_relationships} relationships`;
             } else {
@@ -753,7 +752,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `❌ No results found for job ${jobId}` }] };
         }
         
-        const resultText = results.map(result => {
+        const resultText = results.map((result: any) => {
           const conceptsList = result.extracted_concepts.join(', ');
           const metadataEntries = Object.entries(result.metadata)
             .filter(([_, value]) => value && value !== 'null')
@@ -874,7 +873,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `📝 Keine Erinnerungen in Kategorie "${category}" gefunden.` }] };
         }
         
-        const memoryText = memories.map(memory => `📅 ${memory.date} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
+        const memoryText = memories.map((memory: any) => `📅 ${memory.date} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
         return { content: [{ type: 'text', text: `🧠 Erinnerungen aus Kategorie "${category}" (${memories.length} gefunden):\n\n${memoryText}` }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen: ${error}` }] };
@@ -943,7 +942,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `🔍 Keine Erinnerungen für "${query}" gefunden.` }] };
         }
         
-        const memoryText = memories.map(memory => `📅 ${memory.date} | 📂 ${memory.category} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
+        const memoryText = memories.map((memory: any) => `📅 ${memory.date} | 📂 ${memory.category} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
         const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
         return { content: [{ type: 'text', text: `🔍 Suchergebnisse für "${query}"${categoryFilter} (${memories.length} gefunden):\n\n${memoryText}` }] };
       } catch (error) {
@@ -977,7 +976,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n📊 Durchsuchte Quellen:\n• SQLite: ${sqliteCount} Treffer\n• ChromaDB: ${chromaCount} Treffer` }] };
         }
         
-        const memoryText = result.combined_results.slice(0, 20).map(memory => {
+        const memoryText = result.combined_results.slice(0, 20).map((memory: any) => {
           const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
           const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
           return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category} | 🏷️ ${memory.topic}${relevanceScore}\n${memory.content}\n`;
@@ -1014,7 +1013,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Strategie: ${strategyIcon} ${result.search_strategy}` }] };
         }
         
-        const memoryText = result.combined_results.slice(0, 15).map(memory => {
+        const memoryText = result.combined_results.slice(0, 15).map((memory: any) => {
           const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🔗';
           const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
           const isReconstruction = memory.is_concept_reconstruction ? ' [Rekonstruiert]' : '';
@@ -1051,7 +1050,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `🧠 Keine semantischen Konzepte für "${query}" gefunden.` }] };
         }
         
-        const conceptText = result.results.map(concept => {
+        const conceptText = result.results.map((concept: any) => {
           const similarity = (concept.similarity * 100).toFixed(0);
           const originalId = concept.original_memory_id ? ` [Original: ${concept.original_memory_id}]` : '';
           return `🧠 ${concept.date} | 📂 ${concept.category} | Ähnlichkeit: ${similarity}%${originalId}\n🏷️ ${concept.topic}\n${concept.content}\n`;
@@ -1089,7 +1088,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (conceptCount > 0) {
           responseText += `🧠 Verwandte Konzepte (${conceptCount}):\n`;
-          result.related_concepts.slice(0, 5).forEach(concept => {
+          result.related_concepts.slice(0, 5).forEach((concept: any) => {
             const similarity = (concept.similarity * 100).toFixed(0);
             responseText += `• ${concept.content.substring(0, 80)}... (${similarity}%)\n`;
           });
@@ -1098,7 +1097,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (relatedCount > 0) {
           responseText += `🔗 Verwandte Memories (${relatedCount}):\n\n`;
-          result.related_memories.slice(0, 5).forEach(relMem => {
+          result.related_memories.slice(0, 5).forEach((relMem: any) => {
             const relevance = (relMem.relevance_score * 100).toFixed(0);
             responseText += `📅 ${relMem.date} | 📂 ${relMem.category} | Relevanz: ${relevance}%\n🏷️ ${relMem.topic}\n${relMem.content.substring(0, 150)}...\n\n---\n\n`;
           });
@@ -1182,7 +1181,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.` }] };
         }
         
-        const memoryText = result.reranked_results.slice(0, 15).map(memory => {
+        const memoryText = result.reranked_results.slice(0, 15).map((memory: any) => {
           const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
           const rerankScore = memory.rerank_score ? ` (⚡${(memory.rerank_score * 100).toFixed(0)}%)` : '';
           const details = memory.rerank_details ? ` [${Object.entries(memory.rerank_details).map(([k,v]) => `${k}:${typeof v === 'number' ? (v * 100).toFixed(0) + '%' : v}`).join(', ')}]` : '';
@@ -1208,7 +1207,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const categories = args?.categories as string[];
         if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchMemoriesIntelligentWithReranking(query, categories);
+        const result = await memoryDb.searchMemoriesWithReranking(query, categories);
         if (!result.success) {
           return { content: [{ type: 'text', text: `❌ Intelligente Reranking-Suche fehlgeschlagen: ${result.error}` }] };
         }
@@ -1222,7 +1221,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Such-Strategie: ${strategyIcon} ${result.search_strategy}\n⚡ Rerank-Strategie: ${rerankIcon} ${result.rerank_strategy}` }] };
         }
         
-        const memoryText = result.reranked_results.slice(0, 12).map(memory => {
+        const memoryText = result.reranked_results.slice(0, 12).map((memory: any) => {
           const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🔗';
           const rerankScore = memory.rerank_score ? ` (⚡${(memory.rerank_score * 100).toFixed(0)}%)` : '';
           const isReconstruction = memory.is_concept_reconstruction ? ' [Rekonstruiert]' : '';
@@ -1251,7 +1250,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (!category || !topic || !content) throw new Error('Category, topic and content required');
         
-        const result = await memoryDb.saveNewMemoryWithGraph(category, topic, content, forceRelationships);
+        const result = await memoryDb.saveMemoryWithGraph(category, topic, content, forceRelationships);
         
         const relationshipText = result.stored_in_neo4j 
           ? `\n🕸️ Graph-Netzwerk: ✅ (${result.relationships_created} Beziehungen erstellt)`
@@ -1286,7 +1285,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.${graphInfo}` }] };
         }
         
-        const memoryText = result.combined_results.slice(0, 10).map(memory => {
+        const memoryText = result.combined_results.slice(0, 10).map((memory: any) => {
           const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🕸️';
           return `${sourceIcon} **${memory.topic}** (${memory.category})\n${memory.content}\n📅 ${memory.date}`;
         }).join('\n\n');
@@ -1308,7 +1307,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (!memoryId) throw new Error('Memory ID required');
         
-        const result = await memoryDb.getMemoryWithGraphContext(memoryId, relationshipDepth, relationshipTypes);
+        const result = await memoryDb.getMemoryGraphContext(memoryId, relationshipDepth, relationshipTypes);
         
         if (!result.success) {
           return { content: [{ type: 'text', text: `❌ Memory mit ID ${memoryId} nicht gefunden.` }] };
@@ -1367,8 +1366,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: '📂 Keine Kategorien gefunden.' }] };
         }
         
-        const categoryText = categories.map(cat => `📂 ${cat.category}: ${cat.count} memories`).join('\n');
-        const totalMemories = categories.reduce((sum, cat) => sum + cat.count, 0);
+        const categoryText = categories.map((cat: any) => `📂 ${cat.category}: ${cat.count} memories`).join('\n');
+        const totalMemories = categories.reduce((sum: number, cat: any) => sum + cat.count, 0);
         
         return { 
           content: [{ 
@@ -1391,7 +1390,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: '📝 Keine Erinnerungen gefunden.' }] };
         }
         
-        const memoryText = memories.map(memory => {
+        const memoryText = memories.map((memory: any) => {
           const dateStr = memory.date || 'N/A';
           const categoryStr = memory.category || 'Unbekannt';
           const topicStr = memory.topic || 'Kein Titel';
@@ -1429,7 +1428,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `❌ Memory with ID ${id} not found.` }] };
         }
         
-        const result = await memoryDb.updateMemory(id, topic, content, category);
+        const result = await memoryDb.updateMemory(id, { topic, content, category });
         
         if (result.changedRows === 0) {
           return { content: [{ type: 'text', text: `❌ No changes made to memory ${id}.` }] };
@@ -1443,7 +1442,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { 
           content: [{ 
             type: 'text', 
-            text: `✅ Memory ${id} successfully updated!\n\n📝 Updated fields:\n${updatedFields.map(field => `• ${field}`).join('\n')}\n\n📂 Original: ${existingMemory.category} | 🏷️ ${existingMemory.topic}` 
+            text: `✅ Memory ${id} successfully updated!\n\n📝 Updated fields:\n${updatedFields.map((field: any) => `• ${field}`).join('\n')}\n\n📂 Original: ${existingMemory.category} | 🏷️ ${existingMemory.topic}` 
           }] 
         };
       } catch (error) {
@@ -1484,6 +1483,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         // Read the directive file
         const directivePath = path.join(__dirname, '../docs/directive.txt');
+
         const directiveContent = await readFile(directivePath, 'utf-8');
         const command = directiveContent.trim();
         
@@ -1549,17 +1549,80 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// Helper functions for database operations
+function ensureDatabaseReady(): void {
+  if (!memoryDb) {
+    throw new Error('Database not initialized. Please check system status.');
+  }
+}
+
+function ensureJobProcessorReady(): void {
+  if (!jobProcessor) {
+    throw new Error('Job processor not initialized. Please check system status.');
+  }
+}
+
+function safeGetMemoryDb(): IMemoryDatabase {
+  ensureDatabaseReady();
+  return memoryDb!;
+}
+
+function safeGetJobProcessor(): JobProcessor {
+  ensureJobProcessorReady();
+  return jobProcessor!;
+}
+
+// Database initialization function
+async function initializeDatabase(): Promise<void> {
+  try {
+    Logger.separator('Database Initialization');
+    Logger.info('Initializing database with DatabaseFactory...');
+    
+    // Initialize database using DatabaseFactory
+    const db = await DatabaseFactory.createDatabase();
+    
+    // Cast to MemoryDatabase for compatibility with existing code
+    memoryDb = db as any;
+    
+    // Initialize other components that depend on the database
+    if (memoryDb) {
+      // Create JobProcessor - cast for compatibility
+      jobProcessor = new JobProcessor(memoryDb as any, LLM_MODEL);
+      
+      // Initialize LLM Service and link to Database
+      analyzer = new SemanticAnalyzer(LLM_MODEL);
+      memoryDb.analyzer = analyzer;
+      
+      Logger.success('Database and core components initialized successfully', {
+        databaseType: DatabaseFactory.getDatabaseType(),
+        jobProcessor: 'JobProcessor',
+        analyzer: 'SemanticAnalyzer'
+      });
+    } else {
+      throw new Error('Database initialization returned null');
+    }
+    
+  } catch (error) {
+    Logger.error('Database initialization failed', error);
+    throw error;
+  }
+}
+
 // Server starten
 async function main() {
   Logger.separator('Server Startup Sequence');
   Logger.info('Starting server initialization sequence...');
   
+  // Database initialisieren
+  Logger.info('Phase 1: Initializing Database...');
+  await initializeDatabase();
+  
   // ChromaDB initialisieren
-  Logger.info('Phase 1: Initializing ChromaDB...');
+  Logger.info('Phase 2: Initializing ChromaDB...');
   await initializeChromaDB();
   
   // Neo4j initialisieren
-  Logger.info('Phase 2: Initializing Neo4j...');
+  Logger.info('Phase 3: Initializing Neo4j...');
   await initializeNeo4j();
   
   // MCP Transport setup

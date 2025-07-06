@@ -101,32 +101,60 @@ export class Neo4jClient {
   async createMemoryNode(memory: Memory): Promise<void> {
     Logger.info('Neo4j: Creating memory node', { memoryId: memory.id, category: memory.category, topic: memory.topic });
     
+    // Filter out undefined values to avoid Neo4j parameter errors
+    const cleanParameters: Record<string, any> = {};
+    const queryParts: string[] = [];
+    
+    // Always include required fields
+    if (memory.id !== undefined) {
+      cleanParameters.id = memory.id;
+      queryParts.push('id: $id');
+    }
+    if (memory.content !== undefined) {
+      cleanParameters.content = memory.content;
+      queryParts.push('content: $content');
+    }
+    if (memory.category !== undefined) {
+      cleanParameters.category = memory.category;
+      queryParts.push('category: $category');
+    }
+    if (memory.topic !== undefined) {
+      cleanParameters.topic = memory.topic;
+      queryParts.push('topic: $topic');
+    }
+    if (memory.date !== undefined) {
+      cleanParameters.date = memory.date;
+      queryParts.push('date: $date');
+    }
+    
+    // Optional fields with defaults
+    cleanParameters.created_at = memory.created_at || new Date().toISOString();
+    queryParts.push('created_at: $created_at');
+    
+    if (memory.metadata !== undefined) {
+      cleanParameters.metadata = JSON.stringify(memory.metadata);
+      queryParts.push('metadata: $metadata');
+    }
+    
+    if (memory.embedding !== undefined && memory.embedding !== null) {
+      cleanParameters.embedding = memory.embedding;
+      queryParts.push('embedding: $embedding');
+    }
+    
     const query = `
       CREATE (m:Memory {
-        id: $id,
-        content: $content,
-        category: $category,
-        topic: $topic,
-        date: $date,
-        created_at: $created_at,
-        metadata: $metadata,
-        embedding: $embedding
+        ${queryParts.join(',\n        ')}
       })
       RETURN m
     `;
 
-    const parameters = {
-      id: memory.id,
-      content: memory.content,
-      category: memory.category,
-      topic: memory.topic,
-      date: memory.date,
-      created_at: memory.created_at || new Date().toISOString(),
-      metadata: JSON.stringify(memory.metadata || {}),
-      embedding: memory.embedding
-    };
+    Logger.debug('Neo4j: Cleaned parameters for memory creation', { 
+      memoryId: memory.id, 
+      parameterCount: Object.keys(cleanParameters).length,
+      includedFields: Object.keys(cleanParameters)
+    });
 
-    await this.runQuery(query, parameters);
+    await this.runQuery(query, cleanParameters);
     Logger.success('Neo4j: Memory node created successfully', { memoryId: memory.id });
   }
 
