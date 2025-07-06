@@ -43,17 +43,17 @@ export class EmbeddingFactory {
      * @param args - Command line arguments
      * @returns EmbeddingProvider instance
      */
-    static createFromEnv(args: string[] = process.argv): EmbeddingProvider {
+    static createFromEnv(args: string[] = process.argv || []): EmbeddingProvider {
         Logger.info('Creating embedding provider from environment', { argsCount: args.length });
         
-        // Parse command line arguments
+        // Parse command line arguments safely
         const embeddingProvider = args
-            .find(arg => arg.startsWith('--embedding-provider='))
-            ?.split('=')[1] || 'openai';
+            .find(arg => arg && arg.startsWith('--embedding-provider='))
+            ?.split('=')[1] || process.env.EMBEDDING_PROVIDER || 'openai';
         
         const embeddingModel = args
-            .find(arg => arg.startsWith('--embedding-model='))
-            ?.split('=')[1];
+            .find(arg => arg && arg.startsWith('--embedding-model='))
+            ?.split('=')[1] || process.env.EMBEDDING_MODEL;
 
         const config: EmbeddingConfig = {
             provider: embeddingProvider as 'openai' | 'ollama',

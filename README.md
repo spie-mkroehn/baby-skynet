@@ -17,7 +17,7 @@ Baby-SkyNet erweitert Claude um:
 ## Features v2.3
 
 ### Core Memory Management
-- ✅ **SQLite Database** - Robuste, lokale Datenhaltung
+- ✅ **SQL Database** - Robuste, lokale Datenhaltung
 - ✅ **Kategorien-System** - Programmieren, Debugging, Projekte, etc.
 - ✅ **Volltext-Suche** - Durchsuche alle Memories
 - ✅ **CRUD Operations** - Create, Read, Update, Move
@@ -35,6 +35,12 @@ Baby-SkyNet erweitert Claude um:
 - ✅ **Batch Processing** - Asynchrone Analyse mehrerer Memories
 - ✅ **Metadata Enrichment** - Tools, People, Code-Detection
 - ✅ **Relationship Detection** - Automatische semantische Verknüpfungen
+
+### Container Management & Auto-Start
+- ✅ **Podman/Docker Integration** - Automatisches Container-Management
+- ✅ **Auto-Start Services** - ChromaDB und Neo4j automatisch starten
+- ✅ **Health Monitoring** - Container-Status in memory_status Tool
+- ✅ **Smart Recovery** - Neustart fehlgeschlagener Container
 
 ## Quick Start
 
@@ -124,3 +130,26 @@ cp .env.example .env
 - `search_memories_with_graph` - Erweiterte Suche mit Kontext
 - `get_memory_graph_context` - Beziehungsnetzwerk anzeigen
 - `get_graph_statistics` - Netzwerk-Statistiken
+
+## 🧪 Testing
+
+Baby-SkyNet verfügt über eine umfassende Test-Suite mit 18+ Tests:
+
+```bash
+# Build & einzelner Test
+npm run build
+node tests/test-simple.js
+
+# Alle Tests ausführen
+Get-ChildItem tests\test-*.js | ForEach-Object { node $_.FullName }
+```
+
+**Test-Kategorien:**
+- Core System Tests (Basis-Funktionalität)
+- Integration Tests (End-to-End)
+- MCP Interface Tests (Claude Desktop)
+- Database Tests (PostgreSQL/SQLite)
+- VectorDB Tests (ChromaDB)
+- External Service Tests (OpenAI, Neo4j)
+
+📖 **Detaillierte Dokumentation:** [`TESTING.md`](TESTING.md) | [`tests/README.md`](tests/README.md)

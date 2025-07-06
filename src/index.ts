@@ -10,7 +10,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { MemoryDatabase } from './database/MemoryDatabase.js';
+import { SQLiteDatabase } from './database/SQLiteDatabase.js';
 import { DatabaseFactory, IMemoryDatabase } from './database/DatabaseFactory.js';
 import { SemanticAnalyzer } from './llm/SemanticAnalyzer.js';
 import { JobProcessor } from './jobs/JobProcessor.js';
@@ -18,6 +18,7 @@ import { ChromaDBClient } from './vectordb/ChromaDBClient.js';
 import { Neo4jClient } from './vectordb/Neo4jClient.js';
 import { EmbeddingFactory } from './embedding/index.js';
 import { Logger } from './utils/Logger.js';
+import { ContainerManager } from './utils/ContainerManager.js';
 
 
 /**
@@ -32,54 +33,67 @@ const __baby_skynet_version = 2.3
 const envPath = path.join(__dirname, '../.env');
 dotenv.config({ path: envPath });
 
-// Initialize logging FIRST
+// Initialize logging FIRST (but silently for MCP)
 Logger.initialize();
-Logger.separator(`Baby-SkyNet v${__baby_skynet_version} Startup`);
-Logger.info('Baby-SkyNet MCP Server starting...', { 
-  version: __baby_skynet_version,
-  envPath,
-  nodeVersion: process.version
-});
+
+// Reduced startup logging for MCP compatibility
+if (process.env.DEBUG_BABY_SKYNET) {
+  Logger.separator(`Baby-SkyNet v${__baby_skynet_version} Startup`);
+  Logger.info('Baby-SkyNet MCP Server starting...', { 
+    version: __baby_skynet_version,
+    envPath,
+    nodeVersion: process.version
+  });
+}
 
 // LLM Configuration
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
 let LLM_MODEL = 'llama3.1:latest'; // Default, wird von Args überschrieben
 
-// Debug: Check if API key is loaded
-Logger.debug('Environment check', { 
-  envPath,
-  hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
-  anthropicKeyPrefix: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 8) + '...' : 'MISSING'
-});
+// Debug: Check if API key is loaded (only in debug mode)
+if (process.env.DEBUG_BABY_SKYNET) {
+  Logger.debug('Environment check', { 
+    envPath,
+    hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+    anthropicKeyPrefix: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 8) + '...' : 'MISSING'
+  });
+}
 
 // Kommandozeilen-Parameter parsen
 function parseArgs(): { dbPath?: string; brainModel?: string; lancedbPath?: string } {
-  const args = process.argv.slice(2);
+  const args = (process.argv || []).slice(2);
   const result: { dbPath?: string; brainModel?: string; lancedbPath?: string } = {};
   
-  Logger.debug('Parsing command line arguments', { argsCount: args.length, args });
+  if (process.env.DEBUG_BABY_SKYNET) {
+    Logger.debug('Parsing command line arguments', { argsCount: args.length, args });
+  }
   
   for (let i = 0; i < args.length; i++) {
-    if ((args[i] === '--db-path' || args[i] === '--dbpath') && i + 1 < args.length) {
+    const arg = args[i];
+    if (!arg) continue; // Skip undefined/null args
+    
+    if ((arg === '--db-path' || arg === '--dbpath') && i + 1 < args.length) {
       result.dbPath = args[i + 1];
       i++;
     }
-    if (args[i] === '--brain-model' && i + 1 < args.length) {
+    if (arg === '--brain-model' && i + 1 < args.length) {
       result.brainModel = args[i + 1];
       i++;
     }
-    if (args[i] === '--lancedb-path' && i + 1 < args.length) {
+    if (arg === '--lancedb-path' && i + 1 < args.length) {
       result.lancedbPath = args[i + 1];
       i++;
     }
   }
   
-  Logger.info('Command line arguments parsed', { 
-    dbPath: result.dbPath,
-    brainModel: result.brainModel,
-    lancedbPath: result.lancedbPath
-  });
+  if (process.env.DEBUG_BABY_SKYNET) {
+    Logger.info('Command line arguments parsed', { 
+      dbPath: result.dbPath,
+      brainModel: result.brainModel,
+      lancedbPath: result.lancedbPath
+    });
+  }
   
   return result;
 }
@@ -122,10 +136,10 @@ async function initializeChromaDB() {
     Logger.separator('ChromaDB Initialization');
     Logger.info('ChromaDB initialization starting...');
     
-    // Get collection name from ARGV
-    const collectionName = process.argv
-      .find(arg => arg.startsWith('--chroma-collection='))
-      ?.split('=')[1] || 'claude-main';
+    // Get collection name from ARGV or environment
+    const collectionName = (process.argv || [])
+      .find(arg => arg && arg.startsWith('--chroma-collection='))
+      ?.split('=')[1] || process.env.CHROMA_COLLECTION || 'claude-main';
     
     Logger.info('Using ChromaDB collection', { collectionName });
     
@@ -134,12 +148,6 @@ async function initializeChromaDB() {
     
     await chromaClient.initialize();
     Logger.success('ChromaDB initialization completed successfully');
-    
-    // Link ChromaDB client to MemoryDatabase
-    if (memoryDb) {
-      memoryDb.chromaClient = chromaClient;
-      Logger.info('ChromaDB linked to MemoryDatabase');
-    }
     
     Logger.success(`ChromaDB connected: Collection "${collectionName}"`);
   } catch (error) {
@@ -177,12 +185,6 @@ async function initializeNeo4j() {
     await neo4jClient.createIndex();
     Logger.success('Neo4j indexes created successfully');
     
-    // Link Neo4j client to MemoryDatabase
-    if (memoryDb) {
-      memoryDb.neo4jClient = neo4jClient;
-      Logger.info('Neo4j linked to MemoryDatabase');
-    }
-    
     Logger.success(`Neo4j fully operational: ${neo4jConfig.uri}`);
   } catch (error) {
     Logger.error(`Neo4j initialization failed: ${error}`);
@@ -213,8 +215,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = [
       {
         name: 'memory_status',
-        description: 'Status des Memory Systems anzeigen',
-        inputSchema: { type: 'object', properties: {} },
+        description: 'Status des Memory Systems anzeigen und Container automatisch starten',
+        inputSchema: { 
+          type: 'object', 
+          properties: {
+            autostart: {
+              type: 'boolean',
+              description: 'Automatisch fehlende Container starten (ChromaDB, Neo4j)',
+              default: false
+            }
+          }
+        },
       },
       {
         name: 'recall_category',
@@ -392,7 +403,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'search_memories_advanced',
-        description: 'Erweiterte hybride Suche in SQLite und ChromaDB mit semantischer Ähnlichkeit',
+        description: 'Erweiterte hybride Suche in SQL Database und ChromaDB mit semantischer Ähnlichkeit',
         inputSchema: {
           type: 'object',
           properties: {
@@ -404,7 +415,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'search_memories_intelligent',
-        description: 'Intelligente adaptive Suche - wechselt automatisch zu ChromaDB-only wenn SQLite leer ist',
+        description: 'Intelligente adaptive Suche - wechselt automatisch zu ChromaDB-only wenn SQL Database leer ist',
         inputSchema: {
           type: 'object',
           properties: {
@@ -564,14 +575,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   switch (name) {
     case 'memory_status':
-      Logger.debug('Executing memory_status tool');
+      Logger.debug('Executing memory_status tool', { autostart: args?.autostart });
+      
+      // Container Management
+      let containerStatus = '';
+      let containerActions = '';
+      
+      if (args?.autostart) {
+        Logger.info('Auto-start mode enabled - checking containers');
+        const containerManager = new ContainerManager();
+        
+        try {
+          const containerResults = await containerManager.ensureBabySkyNetContainers();
+          
+          if (containerResults.alreadyRunning.length > 0) {
+            containerActions += `✅ Already running: ${containerResults.alreadyRunning.join(', ')}\n`;
+          }
+          
+          if (containerResults.started.length > 0) {
+            containerActions += `🚀 Started: ${containerResults.started.join(', ')}\n`;
+          }
+          
+          if (containerResults.failed.length > 0) {
+            containerActions += `❌ Failed to start: ${containerResults.failed.join(', ')}\n`;
+          }
+          
+          // Wait a moment for containers to fully start
+          if (containerResults.started.length > 0) {
+            Logger.info('Waiting for containers to fully initialize...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+          
+        } catch (error) {
+          containerActions = `❌ Container management failed: ${error}\n`;
+          Logger.error('Container management failed', { error });
+        }
+      } else {
+        // Just check container status without starting
+        const containerManager = new ContainerManager();
+        
+        if (await containerManager.isContainerEngineAvailable()) {
+          const containers = await containerManager.getMultipleContainerStatus([
+            'baby-skynet-chromadb',
+            'baby-skynet-neo4j'
+          ]);
+          
+          containerStatus = '\n🐳 **Container Status:**\n';
+          for (const container of containers) {
+            const status = container.running ? '✅ Running' : 
+                          container.exists ? '⏸️ Stopped' : '❌ Not Found';
+            const portInfo = container.port ? ` (port ${container.port})` : '';
+            containerStatus += `   ${container.name}: ${status}${portInfo}\n`;
+          }
+          
+          if (containers.some(c => !c.running)) {
+            containerStatus += '\n💡 **Tip:** Use `memory_status` with autostart=true to automatically start containers\n';
+          }
+        } else {
+          containerStatus = '\n🐳 **Container Status:** Podman not available\n';
+        }
+      }
+      
       const dbStatus = memoryDb ? '✅ Connected' : '❌ Not Connected';
       
       if (!memoryDb) {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 LLM Integration: Waiting for DB\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available`,
+            text: `📊 Baby SkyNet - Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 LLM Integration: Waiting for DB\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available${containerStatus}\n${containerActions}`,
           }],
         };
       }
@@ -622,14 +693,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} - Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen`,
+            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} - Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen${containerStatus}\n${containerActions}`,
           }],
         };
       } catch (error) {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} Memory Status\n\n🗄️  SQLite Database: ${dbStatus}\n🧠 ChromaDB: ❌ Error loading\n🕸️ Neo4j Graph: ❌ Error loading\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available`,
+            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ❌ Error loading\n🕸️ Neo4j Graph: ❌ Error loading\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available${containerStatus}\n${containerActions}`,
           }],
         };
       }
@@ -918,12 +989,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `❌ Pipeline Error: ${result.error}` }] };
         }
         
-        const sqliteStatus = result.stored_in_sqlite ? '✅ Core Memory (SQLite)' : '⏭️ LanceDB only';
+        const sqlStatus = result.stored_in_sqlite ? '✅ Core Memory (SQL)' : '⏭️ LanceDB only';
         const lancedbStatus = result.stored_in_lancedb ? '✅ Semantic Search (LanceDB)' : '❌ LanceDB failed';
         const shortMemoryStatus = result.stored_in_short_memory ? '✅ Short Memory (FIFO Queue)' : '❌ Short Memory failed';
         
         return {
-          content: [{ type: 'text', text: `🚀 Advanced Memory Pipeline Complete!\n\n📂 Original Category: ${category}\n🧠 Analyzed Type: ${result.analyzed_category}\n🏷️ Topic: ${topic}\n🆔 Memory ID: ${result.memory_id}\n📅 Date: ${new Date().toISOString().split('T')[0]}\n\n💾 Storage Results:\n${sqliteStatus}\n${lancedbStatus}\n${shortMemoryStatus}\n\n🤔 Significance: ${result.significance_reason}` }]
+          content: [{ type: 'text', text: `🚀 Advanced Memory Pipeline Complete!\n\n📂 Original Category: ${category}\n🧠 Analyzed Type: ${result.analyzed_category}\n🏷️ Topic: ${topic}\n🆔 Memory ID: ${result.memory_id}\n📅 Date: ${new Date().toISOString().split('T')[0]}\n\n💾 Storage Results:\n${sqlStatus}\n${lancedbStatus}\n${shortMemoryStatus}\n\n🤔 Significance: ${result.significance_reason}` }]
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Advanced Pipeline Error: ${error}` }] };
@@ -969,11 +1040,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         
         const totalResults = result.combined_results.length;
-        const sqliteCount = result.sqlite_results.length;
+        const sqlCount = result.sqlite_results.length;
         const chromaCount = result.chroma_results.length;
         
         if (totalResults === 0) {
-          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n📊 Durchsuchte Quellen:\n• SQLite: ${sqliteCount} Treffer\n• ChromaDB: ${chromaCount} Treffer` }] };
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n📊 Durchsuchte Quellen:\n• SQL Database: ${sqlCount} Treffer\n• ChromaDB: ${chromaCount} Treffer` }] };
         }
         
         const memoryText = result.combined_results.slice(0, 20).map((memory: any) => {
@@ -986,7 +1057,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { 
           content: [{ 
             type: 'text', 
-            text: `🚀 Erweiterte Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Statistik:\n• Gesamt: ${totalResults} Ergebnisse\n• SQLite: ${sqliteCount} Treffer\n• ChromaDB: ${chromaCount} semantische Treffer\n\n🎯 Top ${Math.min(20, totalResults)} Ergebnisse:\n\n${memoryText}` 
+            text: `🚀 Erweiterte Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Statistik:\n• Gesamt: ${totalResults} Ergebnisse\n• SQL Database: ${sqlCount} Treffer\n• ChromaDB: ${chromaCount} semantische Treffer\n\n🎯 Top ${Math.min(20, totalResults)} Ergebnisse:\n\n${memoryText}` 
           }] 
         };
       } catch (error) {
@@ -1123,7 +1194,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = await memoryDb.searchMemoriesAdvanced(query, categories);
         
         const explanation = {
-          sqlite_strategy: "Full-text search in topic and content fields",
+          sql_strategy: "Full-text search in topic and content fields",
           chroma_strategy: "Semantic vector similarity search using embeddings",
           metadata_filters_applied: categories ? categories.length > 0 : false,
           semantic_search_performed: memoryDb.chromaClient !== null
@@ -1140,7 +1211,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         let responseText = `🔬 Such-Analyse für "${query}":\n\n`;
         responseText += `📊 Verwendete Strategien:\n`;
-        responseText += `• SQLite: ${explanation.sqlite_strategy}\n`;
+        responseText += `• SQL Database: ${explanation.sql_strategy}\n`;
         responseText += `• ChromaDB: ${explanation.chroma_strategy}\n`;
         responseText += `• Metadaten-Filter: ${explanation.metadata_filters_applied ? '✅ Ja' : '❌ Nein'}\n`;
         responseText += `• Semantische Suche: ${explanation.semantic_search_performed ? '✅ Aktiv' : '❌ Nicht verfügbar'}\n\n`;
@@ -1207,7 +1278,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const categories = args?.categories as string[];
         if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchMemoriesWithReranking(query, categories);
+        const result = await memoryDb.searchMemoriesIntelligentWithReranking(query, categories);
         if (!result.success) {
           return { content: [{ type: 'text', text: `❌ Intelligente Reranking-Suche fehlgeschlagen: ${result.error}` }] };
         }
@@ -1257,7 +1328,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           : '\n🕸️ Graph-Netzwerk: ❌ (Neo4j nicht verfügbar)';
         
         return {
-          content: [{ type: 'text', text: `✅ Memory mit Graph-Integration gespeichert!\n\n📂 Kategorie: ${category}\n🏷️ Topic: ${topic}\n🆔 ID: ${result.memory_id}\n💾 SQLite: ✅\n🧠 ChromaDB: ${result.stored_in_chroma ? '✅' : '❌'}${relationshipText}` }]
+          content: [{ type: 'text', text: `✅ Memory mit Graph-Integration gespeichert!\n\n📂 Kategorie: ${category}\n🏷️ Topic: ${topic}\n🆔 ID: ${result.memory_id}\n💾 SQL Database: ✅\n🧠 ChromaDB: ${result.stored_in_chroma ? '✅' : '❌'}${relationshipText}` }]
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Fehler beim Speichern mit Graph: ${error}` }] };
@@ -1434,7 +1505,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `❌ No changes made to memory ${id}.` }] };
         }
         
-        const updatedFields = [];
+        const updatedFields: string[] = [];
         if (topic !== undefined) updatedFields.push(`Topic: "${topic}"`);
         if (content !== undefined) updatedFields.push(`Content: Updated (${content.length} characters)`);
         if (category !== undefined) updatedFields.push(`Category: "${category}"`);
@@ -1472,7 +1543,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { 
           content: [{ 
             type: 'text', 
-            text: `✅ Memory ${id} successfully moved!\n\n📂 ${originalCategory} → ${new_category}\n🏷️ ${existingMemory.topic}\n📅 ${existingMemory.date}\n\n💡 Note: This only updates the SQLite database. For full ChromaDB/Neo4j sync, consider using save_memory_with_graph for new memories.` 
+            text: `✅ Memory ${id} successfully moved!\n\n📂 ${originalCategory} → ${new_category}\n🏷️ ${existingMemory.topic}\n📅 ${existingMemory.date}\n\n💡 Note: This only updates the core SQL database. For full ChromaDB/Neo4j sync, consider using save_memory_with_graph for new memories.` 
           }] 
         };
       } catch (error) {
@@ -1608,6 +1679,54 @@ async function initializeDatabase(): Promise<void> {
   }
 }
 
+// Function to link external clients to database after they are initialized
+async function linkClientsToDatabase(): Promise<void> {
+  if (!memoryDb) {
+    Logger.warn('Cannot link clients: memoryDb not initialized');
+    return;
+  }
+
+  // ChromaDB Client Linking mit Health Check
+  if (chromaClient && !memoryDb.chromaClient) {
+    try {
+      // Test ChromaDB connectivity before linking
+      const isHealthy = await chromaClient.healthCheck();
+      if (isHealthy) {
+        memoryDb.chromaClient = chromaClient;
+        Logger.success('ChromaDB client linked to database and verified');
+      } else {
+        throw new Error('ChromaDB health check returned false');
+      }
+    } catch (error) {
+      Logger.error('ChromaDB client failed health check, not linking', error);
+      chromaClient = null; // Reset client if it's not working
+    }
+  }
+  
+  // Neo4j Client Linking mit Health Check
+  if (neo4jClient && !memoryDb.neo4jClient) {
+    try {
+      // Test Neo4j connectivity before linking
+      const isHealthy = await neo4jClient.healthCheck();
+      if (isHealthy) {
+        memoryDb.neo4jClient = neo4jClient;
+        Logger.success('Neo4j client linked to database and verified');
+      } else {
+        throw new Error('Neo4j health check returned false');
+      }
+    } catch (error) {
+      Logger.error('Neo4j client failed health check, not linking', error);
+      neo4jClient = null; // Reset client if it's not working
+    }
+  }
+
+  // Log final status
+  Logger.info('Client linking completed', {
+    chromaLinked: !!memoryDb.chromaClient,
+    neo4jLinked: !!memoryDb.neo4jClient
+  });
+}
+
 // Server starten
 async function main() {
   Logger.separator('Server Startup Sequence');
@@ -1620,16 +1739,18 @@ async function main() {
   // ChromaDB initialisieren
   Logger.info('Phase 2: Initializing ChromaDB...');
   await initializeChromaDB();
+  await linkClientsToDatabase(); // Link ChromaDB to database with health check
   
   // Neo4j initialisieren
   Logger.info('Phase 3: Initializing Neo4j...');
   await initializeNeo4j();
+  await linkClientsToDatabase(); // Link Neo4j to database with health check
   
   // MCP Transport setup
-  Logger.info('Phase 3: Setting up MCP transport...');
+  Logger.info('Phase 4: Setting up MCP transport...');
   const transport = new StdioServerTransport();
   
-  Logger.info('Phase 4: Connecting MCP server...');
+  Logger.info('Phase 5: Connecting MCP server...');
   await server.connect(transport);
   
   Logger.success('Baby-SkyNet MCP Server v2.3 fully operational!');

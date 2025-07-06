@@ -405,6 +405,16 @@ export class Neo4jClient {
     return stats;
   }
 
+  async healthCheck(): Promise<boolean> {
+    try {
+      await this.driver.verifyConnectivity();
+      return true;
+    } catch (error) {
+      Logger.error('Neo4j health check failed', error);
+      return false;
+    }
+  }
+
   private nodeToMemory(node: Node, relationships: any[] = []): GraphMemory {
     const props = node.properties;
     

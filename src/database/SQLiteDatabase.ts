@@ -28,7 +28,7 @@ interface ChromaDBClient {
 }
 
 // SQLite Database Helper mit Job-Management
-export class MemoryDatabase {
+export class SQLiteDatabase {
   private db: sqlite3.Database;
   private shortMemoryManager: ShortMemoryManager;
   public analyzer: SemanticAnalyzer | null = null;
@@ -36,13 +36,13 @@ export class MemoryDatabase {
   public neo4jClient: Neo4jClient | null = null;
   
   constructor(dbPath: string) {
-    Logger.info('MemoryDatabase initialization starting...', { dbPath });
+    Logger.info('SQLiteDatabase initialization starting...', { dbPath });
     
-    this.db = new sqlite3.Database(dbPath);
+    this.db = new (sqlite3.verbose().Database)(dbPath);
     this.shortMemoryManager = new ShortMemoryManager(this.db);
     this.initializeDatabase();
     
-    Logger.success('MemoryDatabase constructed successfully');
+    Logger.success('SQLiteDatabase constructed successfully');
   }
   
   // Guard Clause: Validate category against 7-Category Architecture
@@ -106,7 +106,7 @@ export class MemoryDatabase {
     `;
 
     this.db.serialize(() => {
-      this.db.run(createMemoriesTableQuery, (err) => {
+      this.db.run(createMemoriesTableQuery, (err: Error | null) => {
         if (err) {
           Logger.error('Error creating memories table', err);
         } else {
@@ -114,7 +114,7 @@ export class MemoryDatabase {
         }
       });
 
-      this.db.run(createAnalysisJobsTableQuery, (err) => {
+      this.db.run(createAnalysisJobsTableQuery, (err: Error | null) => {
         if (err) {
           Logger.error('Error creating analysis_jobs table', err);
         } else {
@@ -122,7 +122,7 @@ export class MemoryDatabase {
         }
       });
 
-      this.db.run(createAnalysisResultsTableQuery, (err) => {
+      this.db.run(createAnalysisResultsTableQuery, (err: Error | null) => {
         if (err) {
           Logger.error('Error creating analysis_results table', err);
         } else {
@@ -130,7 +130,7 @@ export class MemoryDatabase {
         }
       });
 
-      this.db.run(createIndexQuery, (err) => {
+      this.db.run(createIndexQuery, (err: Error | null) => {
         if (err) {
           Logger.error('Error creating indexes', err);
         } else {
@@ -147,7 +147,7 @@ export class MemoryDatabase {
     
     return new Promise((resolve, reject) => {
       const query = `SELECT id, date, category, topic, content, created_at FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?`;
-      this.db.all(query, [category, limit], (err, rows) => {
+      this.db.all(query, [category, limit], (err: Error | null, rows: any[]) => {
         if (err) {
           Logger.error('Failed to retrieve memories by category', { category, limit, error: err });
           reject(err);
@@ -521,7 +521,7 @@ export class MemoryDatabase {
       if (this.chromaClient) {
         try {
           // Build ChromaDB filter based on categories
-          let chromaFilter = undefined;
+          let chromaFilter: any = undefined;
           if (categories && categories.length > 0) {
             chromaFilter = {
               "$or": categories.map(cat => ({ "source_category": { "$eq": cat } }))
@@ -957,9 +957,9 @@ export class MemoryDatabase {
   }
   
   close() {
-    Logger.info('Closing MemoryDatabase connection');
+    Logger.info('Closing SQLiteDatabase connection');
     this.db.close();
-    Logger.success('MemoryDatabase connection closed');
+    Logger.success('SQLiteDatabase connection closed');
   }
 
   // Helper method to calculate text relevance score
@@ -1171,7 +1171,7 @@ export class MemoryDatabase {
       }
 
       // Build ChromaDB filter based on categories
-      let chromaFilter = undefined;
+      let chromaFilter: any = undefined;
       if (categories && categories.length > 0) {
         chromaFilter = {
           "$or": categories.map(cat => ({ "source_category": { "$eq": cat } }))
@@ -1393,6 +1393,20 @@ export class MemoryDatabase {
     error?: string;
   }> {
     try {
+      // Validate input
+      if (!query || query.trim().length === 0) {
+        return {
+          success: false,
+          sqlite_results: [],
+          chroma_results: [],
+          combined_results: [],
+          reranked_results: [],
+          search_strategy: 'hybrid',
+          rerank_strategy: 'none',
+          error: 'Query parameter is required and cannot be empty'
+        };
+      }
+      
       // Get intelligent search results
       const intelligentResult = await this.searchMemoriesIntelligent(query, categories);
       
@@ -1568,11 +1582,11 @@ export class MemoryDatabase {
     try {
       // Batch process for efficiency (process in chunks of 5)
       const batchSize = 5;
-      const rankedResults = [];
+      const rankedResults: any[] = [];
       
       for (let i = 0; i < results.length; i += batchSize) {
         const batch = results.slice(i, i + batchSize);
-        const batchPromises = batch.map(async (result) => {
+        const batchPromises = batch.map(async (result: any) => {
           try {
             // Create relevance evaluation prompt
             const evaluationPrompt = `
@@ -1615,7 +1629,7 @@ Return only the number (e.g., 0.85).
         rankedResults.push(...batchResults);
       }
       
-      return rankedResults.sort((a, b) => (b.rerank_score || 0) - (a.rerank_score || 0));
+      return rankedResults.sort((a: any, b: any) => (b.rerank_score || 0) - (a.rerank_score || 0));
       
     } catch (error) {
       console.error('LLM reranking failed:', error);
@@ -2074,6 +2088,7 @@ Return only the number (e.g., 0.85).
         try {
           const relatedMemories = await this.neo4jClient.searchRelatedMemories(
             memoryId.toString(),
+
             relationshipTypes,
             relationshipDepth
           );
@@ -2156,7 +2171,7 @@ Return only the number (e.g., 0.85).
       return relationships;
     }
 
-    const enhanced = [];
+    const enhanced: any[] = [];
     
     for (const rel of relationships) {
       try {
@@ -2235,5 +2250,27 @@ Return only the number (e.g., 0.85).
         error: String(error)
       };
     }
+  }
+
+  async saveMemoryWithGraph(
+    category: string, 
+    topic: string, 
+    content: string, 
+    forceRelationships?: any[]
+  ): Promise<{
+    memory_id: number;
+    stored_in_chroma: boolean;
+    stored_in_neo4j: boolean;
+    relationships_created: number;
+  }> {
+    const result = await this.saveNewMemoryAdvanced(category, topic, content);
+    
+    // Transform result to match expected format with consistent naming
+    return {
+      memory_id: result.memory_id || 0,
+      stored_in_chroma: result.stored_in_lancedb || false, // Map lancedb to chroma for compatibility
+      stored_in_neo4j: this.neo4jClient ? true : false, // Indicate if Neo4j is available
+      relationships_created: 0 // Default to 0 since we don't implement actual relationships yet
+    };
   }
 }

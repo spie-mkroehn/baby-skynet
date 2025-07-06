@@ -54,18 +54,34 @@ export class ChromaDBClient {
     const results: { success: boolean; stored: number; errors: string[] } = { success: true, stored: 0, errors: [] };
 
     try {
+      // Filter out concepts with empty or missing descriptions
+      const validConcepts = semanticConcepts.filter(concept => 
+        concept.concept_description && 
+        concept.concept_description.trim() !== ''
+      );
+
+      if (validConcepts.length === 0) {
+        Logger.warn('ChromaDB: No valid concepts to store (all have empty descriptions)', {
+          totalConcepts: semanticConcepts.length,
+          memoryId: originalMemory.id
+        });
+        results.stored = 0;
+        results.errors.push('No valid concepts with descriptions found');
+        return results;
+      }
+
       // Prepare documents for bulk insert
       const timestamp = new Date().toISOString();
       const ids: string[] = [];
       const documents: string[] = [];
       const metadatas: any[] = [];
 
-      for (let i = 0; i < semanticConcepts.length; i++) {
-        const concept = semanticConcepts[i];
+      for (let i = 0; i < validConcepts.length; i++) {
+        const concept = validConcepts[i];
         const documentId = `memory_${originalMemory.id}_concept_${i + 1}_${Date.now()}`;
         
         ids.push(documentId);
-        documents.push(concept.concept_description || '');
+        documents.push(concept.concept_description.trim());
         metadatas.push({
           concept_title: concept.concept_title || '',
           source_memory_id: originalMemory.id,
@@ -82,18 +98,26 @@ export class ChromaDBClient {
         });
       }
 
-      // Bulk insert all concepts
+      // Bulk insert all valid concepts
       await this.collection.add({
         ids: ids,
         documents: documents,
         metadatas: metadatas
       });
 
-      results.stored = semanticConcepts.length;
-      console.error(`✅ ChromaDB: Stored ${results.stored} concepts for memory ${originalMemory.id}`);
+      results.stored = validConcepts.length;
+      Logger.success('ChromaDB: Stored concepts successfully', { 
+        memoryId: originalMemory.id,
+        totalConcepts: semanticConcepts.length,
+        validConcepts: validConcepts.length,
+        filteredOut: semanticConcepts.length - validConcepts.length
+      });
 
     } catch (error) {
-      console.error(`❌ ChromaDB: Failed to store concepts: ${error}`);
+      Logger.error('ChromaDB: Failed to store concepts', { 
+        memoryId: originalMemory.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
       results.errors.push(String(error));
       results.success = false;
     }
@@ -184,5 +208,56 @@ export class ChromaDBClient {
   // Get embedding provider info
   getEmbeddingInfo(): { provider: string; model: string; dimensions: number } {
     return this.embeddingProvider.getModelInfo();
+  }
+
+  async healthCheck(): Promise<boolean> {
+    try {
+      Logger.debug('ChromaDB health check starting...');
+      
+      // Step 1: Test basic client connectivity (API v2 compatible)
+      try {
+        await this.client.heartbeat();
+        Logger.debug('ChromaDB heartbeat successful (API v2)');
+      } catch (heartbeatError) {
+        Logger.error('ChromaDB heartbeat failed - server may be down or using wrong API version', heartbeatError);
+        return false;
+      }
+      
+      // Step 2: Check if collection exists and is accessible
+      if (!this.collection) {
+        Logger.warn('ChromaDB collection not initialized - initialize() may have failed');
+        return false;
+      }
+      
+      // Step 3: Test collection functionality with a simple query
+      try {
+        const count = await this.collection.count();
+        Logger.debug('ChromaDB collection accessible', { collectionName: this.collectionName, documentCount: count });
+        
+        // Step 4: Test embedding provider if available
+        if (this.embeddingProvider) {
+          try {
+            const embeddingWorks = await this.embeddingProvider.testConnection();
+            if (!embeddingWorks) {
+              Logger.warn('ChromaDB embedding provider not healthy - may affect search functionality');
+              return false;
+            }
+            Logger.debug('ChromaDB embedding provider healthy');
+          } catch (embeddingError) {
+            Logger.warn('ChromaDB embedding provider test failed', embeddingError);
+            return false;
+          }
+        }
+        
+        Logger.success('ChromaDB health check passed - all systems operational');
+        return true;
+      } catch (collectionError) {
+        Logger.error('ChromaDB collection not accessible - collection may be corrupted or permissions issue', collectionError);
+        return false;
+      }
+    } catch (error) {
+      Logger.error('ChromaDB health check failed with unexpected error', error);
+      return false;
+    }
   }
 }

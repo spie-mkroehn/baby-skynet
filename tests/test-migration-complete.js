@@ -1,4 +1,4 @@
-import { DatabaseFactory } from './build/database/DatabaseFactory.js';
+import { DatabaseFactory } from '../build/database/DatabaseFactory.js';
 
 async function testCRUD() {
   try {

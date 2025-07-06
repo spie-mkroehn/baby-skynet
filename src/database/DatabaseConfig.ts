@@ -45,7 +45,7 @@ export class DatabaseConfigManager {
     }
     
     // Fall back to SQLite
-    Logger.info('Using SQLite database configuration (fallback)');
+    Logger.info('Using SQL database configuration (fallback)');
     const defaultSqlitePath = process.env.SQLITE_DB_PATH || './claude_memory.db';
     
     return {

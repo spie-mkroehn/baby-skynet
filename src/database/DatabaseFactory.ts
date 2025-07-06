@@ -1,5 +1,5 @@
 import { DatabaseConfig, DatabaseConfigManager } from './DatabaseConfig.js';
-import { MemoryDatabase } from './MemoryDatabase.js';
+import { SQLiteDatabase } from './SQLiteDatabase.js';
 import { PostgreSQLDatabase } from './PostgreSQLDatabase.js';
 import { Logger } from '../utils/Logger.js';
 
@@ -40,8 +40,9 @@ export interface IMemoryDatabase {
   getGraphStatistics?(): Promise<any>;
   searchMemoriesIntelligent?(query: string, categories?: string[]): Promise<any>;
   searchMemoriesWithGraph?(query: string, categories?: string[], includeRelated?: boolean, maxRelationshipDepth?: number): Promise<any>;
-  saveMemoryWithGraph?(category: string, topic: string, content: string, forceRelationships?: boolean): Promise<any>;
+  saveMemoryWithGraph?(category: string, topic: string, content: string, forceRelationships?: any[]): Promise<any>;
   searchMemoriesWithReranking?(query: string, categories?: string[], rerankStrategy?: string): Promise<any>;
+  searchMemoriesIntelligentWithReranking?(query: string, categories?: string[]): Promise<any>;
   searchConceptsOnly?(query: string, categories?: string[], limit?: number): Promise<any>;
   getMemoryGraphContext?(memoryId: number, relationshipDepth?: number, relationshipTypes?: string[]): Promise<any>;
   retrieveMemoryAdvanced?(memoryId: number): Promise<any>;
@@ -61,7 +62,10 @@ export class DatabaseFactory {
   private static instance: IMemoryDatabase | null = null;
   
   static async createDatabase(): Promise<IMemoryDatabase> {
+    Logger.separator('Database Factory Initialization');
+    
     if (this.instance) {
+      Logger.info('Returning existing database instance');
       return this.instance;
     }
     
@@ -71,7 +75,12 @@ export class DatabaseFactory {
     
     try {
       if (config.type === 'postgresql') {
-        Logger.info('Initializing PostgreSQL database...');
+        Logger.info('Initializing PostgreSQL database...', {
+          host: config.host,
+          port: config.port,
+          database: config.database,
+          user: config.user
+        });
         const pgDatabase = new PostgreSQLDatabase({
           host: config.host!,
           port: config.port!,
@@ -84,37 +93,67 @@ export class DatabaseFactory {
         });
         
         // Test the connection and initialize
-        const connectionTest = await pgDatabase.testConnection();
-        if (!connectionTest) {
-          throw new Error('PostgreSQL connection test failed');
+        Logger.info('Testing PostgreSQL connection...');
+        try {
+          const connectionTest = await pgDatabase.testConnection();
+          if (!connectionTest) {
+            throw new Error('PostgreSQL connection test failed');
+          }
+          Logger.success('PostgreSQL connection test passed');
+          
+          Logger.info('Initializing PostgreSQL schema...');
+          await pgDatabase.initialize();
+          
+          this.instance = pgDatabase;
+          Logger.success('PostgreSQL database initialized successfully');
+          
+        } catch (error) {
+          Logger.warn('PostgreSQL connection failed, falling back to SQLite', { 
+            error: error instanceof Error ? error.message : String(error) 
+          });
+          
+          // Fall back to SQLite
+          const fallbackConfig: DatabaseConfig = {
+            type: 'sqlite',
+            sqliteDbPath: process.env.SQLITE_DB_PATH || './claude_memory.db'
+          };
+          
+          Logger.info('Initializing SQLite database as fallback...', { path: fallbackConfig.sqliteDbPath });
+          const sqliteDatabase = new SQLiteDatabase(fallbackConfig.sqliteDbPath!);
+          this.instance = sqliteDatabase as any;
+          Logger.success('SQLite database initialized successfully (fallback)');
         }
         
-        await pgDatabase.initialize();
-        
-        this.instance = pgDatabase;
-        Logger.success('PostgreSQL database initialized successfully');
-        
       } else if (config.type === 'sqlite') {
-        Logger.info('Initializing SQLite database...');
-        const sqliteDatabase = new MemoryDatabase(config.sqliteDbPath!);
+        Logger.info('Initializing SQLite database...', { path: config.sqliteDbPath });
+        const sqliteDatabase = new SQLiteDatabase(config.sqliteDbPath!);
         this.instance = sqliteDatabase as any; // Type assertion for compatibility
         Logger.success('SQLite database initialized successfully');
         
       } else {
+        Logger.error('Unsupported database type attempted', { type: config.type });
         throw new Error(`Unsupported database type: ${config.type}`);
       }
       
+      Logger.success('Database factory initialization completed', { type: config.type });
       return this.instance!; // Non-null assertion since we just assigned it
       
     } catch (error) {
-      Logger.error('Failed to initialize database', error);
+      Logger.error('Failed to initialize database', { 
+        type: config.type,
+        error: error instanceof Error ? error.message : String(error)
+      });
       throw error;
     }
   }
   
   static async getInstance(): Promise<IMemoryDatabase> {
+    Logger.debug('Database instance requested');
     if (!this.instance) {
+      Logger.info('No existing instance found, creating new database instance');
       this.instance = await this.createDatabase();
+    } else {
+      Logger.debug('Returning existing database instance');
     }
     return this.instance!; // Non-null assertion since we just created it
   }
@@ -130,18 +169,23 @@ export class DatabaseFactory {
   
   static getDatabaseType(): string {
     const config = DatabaseConfigManager.getDatabaseConfig();
+    Logger.debug('Database type requested', { type: config.type });
     return config.type;
   }
   
   static async healthCheck(): Promise<{ type: string; status: string; details?: any }> {
+    Logger.separator('Database Health Check');
+    
     try {
       const config = DatabaseConfigManager.getDatabaseConfig();
+      Logger.info('Starting health check', { databaseType: config.type });
       
       if (config.type === 'postgresql') {
+        Logger.debug('Performing PostgreSQL health check...');
         const db = await this.getInstance();
         if (db.testConnection) {
           const isHealthy = await db.testConnection();
-          return {
+          const result = {
             type: 'postgresql',
             status: isHealthy ? 'healthy' : 'unhealthy',
             details: {
@@ -150,12 +194,15 @@ export class DatabaseFactory {
               database: config.database,
             }
           };
+          Logger.success('PostgreSQL health check completed', { status: result.status });
+          return result;
         }
       } else if (config.type === 'sqlite') {
+        Logger.debug('Performing SQLite health check...');
         const db = await this.getInstance();
-        // For SQLite, try to get memory stats as a health check
+        // For SQLite database, try to get memory stats as a health check
         const stats = await db.getMemoryStats?.();
-        return {
+        const result = {
           type: 'sqlite',
           status: 'healthy',
           details: {
@@ -163,15 +210,23 @@ export class DatabaseFactory {
             totalMemories: stats?.total_memories || 0,
           }
         };
+        Logger.success('SQLite health check completed', { 
+          status: result.status, 
+          totalMemories: result.details.totalMemories 
+        });
+        return result;
       }
       
+      Logger.warn('Unknown database type for health check', { type: config.type });
       return {
         type: config.type,
         status: 'unknown'
       };
       
     } catch (error) {
-      Logger.error('Database health check failed', error);
+      Logger.error('Database health check failed', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
       return {
         type: 'unknown',
         status: 'unhealthy',

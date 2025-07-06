@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import dotenv from 'dotenv';
-import { DatabaseFactory } from './build/database/DatabaseFactory.js';
+import { DatabaseFactory } from '../build/database/DatabaseFactory.js';
 
 // Load environment variables
 dotenv.config();

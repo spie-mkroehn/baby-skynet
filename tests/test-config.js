@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import dotenv from 'dotenv';
-import { DatabaseConfigManager } from './build/database/DatabaseConfig.js';
+import { DatabaseConfigManager } from '../build/database/DatabaseConfig.js';
 
 // Load environment variables
 dotenv.config();

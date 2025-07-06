@@ -43,7 +43,7 @@ du verfügst über ein komplett autonomes, hybrides Memory-Management-System mit
 - **Initialisierung:** Automatisch bei Server-Start
 - **LLM-Provider:** Ollama (lokal) + Anthropic API (Claude Haiku)
 - **Primary Database:** PostgreSQL (Podman-basiert, localhost:5432)
-- **Vector Database:** ChromaDB (Podman-basiert, localhost:8000)
+- **Vector Database:** ChromaDB (Podman-basiert, localhost:8000, API v2)
 - **Graph Database:** Neo4j (Podman-basiert, localhost:7687)
 - **Container Management:** Automatisches Podman Container Lifecycle Management
 - **Container Data Persistence:** Volume-Mapping zu Host-Verzeichnis

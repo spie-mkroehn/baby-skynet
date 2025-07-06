@@ -315,7 +315,7 @@ Return ONLY: {"significant": true/false, "reason": "brief explanation"}`;
       
       // Step 2: Analyze each concept individually
       Logger.debug('Pipeline Step 2: Analyzing individual concepts');
-      const analyzedConcepts = [];
+      const analyzedConcepts: any[] = [];
       
       for (let i = 0; i < concepts.length; i++) {
         const concept = concepts[i];
