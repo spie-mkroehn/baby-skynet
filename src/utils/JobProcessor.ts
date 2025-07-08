@@ -1,6 +1,6 @@
 import { IMemoryDatabase } from '../database/DatabaseFactory.js';
 import { SemanticAnalyzer } from '../llm/SemanticAnalyzer.js';
-import { Logger } from '../utils/Logger.js';
+import { Logger } from './Logger.js';
 
 // Job Processing Engine
 export class JobProcessor {

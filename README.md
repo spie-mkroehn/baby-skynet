@@ -178,3 +178,23 @@ Get-ChildItem tests\test-*.js | ForEach-Object { node $_.FullName }
 - External Service Tests (OpenAI, Neo4j)
 
 📖 **Detaillierte Dokumentation:** [`TESTING.md`](TESTING.md) | [`tests/README.md`](tests/README.md)
+
+## ✅ JobProcessor Reorganisation (Januar 2025)
+
+### Verzeichnisstruktur optimiert
+- **JobProcessor.ts** von `src/jobs/` nach `src/utils/` verschoben
+- Leeres `jobs/` Verzeichnis entfernt
+- Import-Pfade entsprechend aktualisiert
+
+### Neue schlanke Struktur:
+```
+src/
+├── database/     # Alle Datenbank-bezogenen Klassen
+├── embedding/    # Embedding-Services
+├── llm/          # LLM-Clients und SemanticAnalyzer
+├── utils/        # Utilities inkl. JobProcessor
+└── index.ts      # Hauptdatei
+```
+
+### Vorteile:
+- Weniger Verzeichnisse → übersichtliche
