@@ -19,7 +19,7 @@ async function testChromaDBServerIntegration() {
   
   try {
     // Import modules
-    const { ChromaDBClient } = await import('./build/vectordb/ChromaDBClient.js');
+    const { ChromaDBClient } = await import('./build/database/ChromaDBClient.js');
     const { Logger } = await import('./build/utils/Logger.js');
     
     // Step 1: Mimic server initialization

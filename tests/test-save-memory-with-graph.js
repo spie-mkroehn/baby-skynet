@@ -20,8 +20,8 @@ async function testSaveMemoryWithGraph() {
   try {
     // Import modules
     const { DatabaseFactory } = await import('./build/database/DatabaseFactory.js');
-    const { ChromaDBClient } = await import('./build/vectordb/ChromaDBClient.js');
-    const { Neo4jClient } = await import('./build/vectordb/Neo4jClient.js');
+    const { ChromaDBClient } = await import('./build/database/ChromaDBClient.js');
+    const { Neo4jClient } = await import('./build/database/Neo4jClient.js');
     const { Logger } = await import('./build/utils/Logger.js');
     
     // Step 1: Initialize database

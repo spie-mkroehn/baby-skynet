@@ -6,8 +6,8 @@
  */
 
 import { DatabaseFactory } from '../build/database/DatabaseFactory.js';
-import { ChromaDBClient } from '../build/vectordb/ChromaDBClient.js';
-import { Neo4jClient } from '../build/vectordb/Neo4jClient.js';
+import { ChromaDBClient } from '../build/database/ChromaDBClient.js';
+import { Neo4jClient } from '../build/database/Neo4jClient.js';
 import { Logger } from '../build/utils/Logger.js';
 
 async function testMCPToolFlow() {

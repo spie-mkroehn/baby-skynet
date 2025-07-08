@@ -1,5 +1,5 @@
 import { DatabaseFactory } from '../build/database/DatabaseFactory.js';
-import { Neo4jClient } from '../build/vectordb/Neo4jClient.js';
+import { Neo4jClient } from '../build/database/Neo4jClient.js';
 
 async function testNeo4jIntegration() {
   try {

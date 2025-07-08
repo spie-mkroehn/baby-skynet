@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { Neo4jClient } from './build/vectordb/Neo4jClient.js';
+import { Neo4jClient } from './build/database/Neo4jClient.js';
 import { Logger } from './build/utils/Logger.js';
 
 /**

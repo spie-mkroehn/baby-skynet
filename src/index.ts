@@ -13,8 +13,8 @@ import {
 import { DatabaseFactory, IMemoryDatabase } from './database/DatabaseFactory.js';
 import { SemanticAnalyzer } from './llm/SemanticAnalyzer.js';
 import { JobProcessor } from './jobs/JobProcessor.js';
-import { ChromaDBClient } from './vectordb/ChromaDBClient.js';
-import { Neo4jClient } from './vectordb/Neo4jClient.js';
+import { ChromaDBClient } from './database/ChromaDBClient.js';
+import { Neo4jClient } from './database/Neo4jClient.js';
 import { EmbeddingFactory } from './embedding/index.js';
 import { Logger } from './utils/Logger.js';
 import { ContainerManager } from './utils/ContainerManager.js';
