@@ -147,6 +147,53 @@ export class SQLiteDatabaseRefactored extends MemoryPipelineBase {
     };
   }
 
+  // Implementation of abstract search methods from MemoryPipelineBase
+
+  async searchMemoriesBasic(query: string, categories?: string[]): Promise<any[]> {
+    Logger.debug('SQLite basic search', { query, categories });
+    
+    let sql = `
+      SELECT id, category, topic, content, date, created_at 
+      FROM memories 
+      WHERE (content LIKE ? OR topic LIKE ?)
+    `;
+    
+    const params: any[] = [`%${query}%`, `%${query}%`];
+    
+    if (categories && categories.length > 0) {
+      sql += ` AND category IN (${categories.map(() => '?').join(', ')})`;
+      params.push(...categories);
+    }
+    
+    sql += ` ORDER BY created_at DESC LIMIT 50`;
+    
+    const stmt = this.db.prepare(sql);
+    const results = stmt.all(...params);
+    
+    Logger.debug('SQLite search completed', { resultCount: results.length });
+    return results;
+  }
+
+  async getMemoriesByCategory(category: string, limit: number = 20): Promise<any[]> {
+    Logger.debug('SQLite category search', { category, limit });
+    
+    this.validateCategory(category);
+    
+    const query = `
+      SELECT id, category, topic, content, date, created_at 
+      FROM memories 
+      WHERE category = ? 
+      ORDER BY created_at DESC 
+      LIMIT ?
+    `;
+    
+    const stmt = this.db.prepare(query);
+    const results = stmt.all(category, limit);
+    
+    Logger.debug('SQLite category search completed', { category, resultCount: results.length });
+    return results;
+  }
+
   // Keep existing SQLite-specific methods
   // ... (all other existing SQLite methods can remain)
 

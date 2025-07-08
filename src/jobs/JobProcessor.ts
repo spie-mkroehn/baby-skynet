@@ -1,15 +1,15 @@
-import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
+import { IMemoryDatabase } from '../database/DatabaseFactory.js';
 import { SemanticAnalyzer } from '../llm/SemanticAnalyzer.js';
 import { Logger } from '../utils/Logger.js';
 
 // Job Processing Engine
 export class JobProcessor {
-  private db: SQLiteDatabase;
+  private db: IMemoryDatabase;
   private analyzer: SemanticAnalyzer;
   private isProcessing: boolean = false;
   private llmModel: string;
   
-  constructor(database: SQLiteDatabase, llmModel: string) {
+  constructor(database: IMemoryDatabase, llmModel: string) {
     this.db = database;
     this.llmModel = llmModel;
     this.analyzer = new SemanticAnalyzer(this.llmModel);

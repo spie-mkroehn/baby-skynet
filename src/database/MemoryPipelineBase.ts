@@ -8,6 +8,7 @@ interface SemanticAnalyzer {
 
 interface ChromaDBClient {
   storeConcepts(memory: any, concepts: any[]): Promise<{ success: boolean; stored: number; errors: string[] }>;
+  searchSimilar(query: string, limit?: number, categories?: string[]): Promise<{ results: any[]; error?: string }>;
 }
 
 interface Neo4jClient {
@@ -15,6 +16,11 @@ interface Neo4jClient {
   createMemoryNodeWithConcepts(memory: any, concepts: any[]): Promise<{ success: boolean; nodeId: string; error?: string }>;
   createRelationships(memoryNodeId: string, relatedMemories: any[]): Promise<{ success: boolean; relationshipsCreated: number; errors?: string[] }>;
   findRelatedMemories(memory: any, concepts: any[]): Promise<{ relatedMemories: any[]; error?: string }>;
+  
+  // Graph search methods
+  searchMemoriesBySemanticConcepts(concepts: string[], limit?: number): Promise<{ memories: any[]; error?: string }>;
+  findMemoriesInConceptCluster(nodeId: string, maxDepth?: number): Promise<{ memories: any[]; relationships: any[]; error?: string }>;
+  getMemoryWithRelationships(memoryId: number, relationshipDepth?: number, relationshipTypes?: string[]): Promise<{ memory: any; relationships: any[]; error?: string }>;
 }
 
 // Advanced Memory Pipeline Result Interface
@@ -30,6 +36,36 @@ export interface AdvancedMemoryResult {
   analyzed_category?: string;
   significance_reason?: string;
   error?: string;
+}
+
+// Search Result Interfaces
+export interface IntelligentSearchResult {
+  results: any[];
+  sources: {
+    sql: { count: number; source: string };
+    chroma: { count: number; source: string };
+  };
+  reranked: boolean;
+  rerank_strategy?: string;
+  total_found: number;
+  execution_time?: number;
+}
+
+export interface GraphSearchResult {
+  results: any[];
+  sources: {
+    sql: { count: number; source: string };
+    chroma: { count: number; source: string };
+    neo4j: { count: number; source: string };
+  };
+  relationships: any[];
+  graph_context: {
+    related_memories: number;
+    relationship_depth: number;
+    cluster_info?: any;
+  };
+  total_found: number;
+  execution_time?: number;
 }
 
 /**
@@ -48,6 +84,10 @@ export abstract class MemoryPipelineBase {
   abstract deleteMemory(id: number): Promise<boolean | any>;
   abstract addToShortMemory(memory: any): Promise<void>;
   abstract moveMemory?(id: number, newCategory: string): Promise<any>;
+  
+  // Abstract search methods that must be implemented by subclasses
+  abstract searchMemoriesBasic(query: string, categories?: string[]): Promise<any[]>;
+  abstract getMemoriesByCategory(category: string, limit?: number): Promise<any[]>;
 
   // Validation helper
   protected validateCategory(category: string): void {
@@ -444,4 +484,469 @@ export abstract class MemoryPipelineBase {
       relationships_created: result.relationships_created || 0
     };
   }
+
+  /**
+   * Intelligent Search Pipeline
+   * Combines SQL + ChromaDB with adaptive fallbacks and optional reranking
+   */
+  async searchMemoriesIntelligent(
+    query: string,
+    categories?: string[],
+    enableReranking: boolean = true,
+    rerankStrategy: 'hybrid' | 'llm' | 'text' = 'hybrid'
+  ): Promise<IntelligentSearchResult> {
+    Logger.separator('Intelligent Search Pipeline (Base)');
+    Logger.info('Starting intelligent search', { 
+      query, 
+      categories, 
+      enableReranking, 
+      rerankStrategy 
+    });
+
+    const startTime = Date.now();
+    let sqlResults: any[] = [];
+    let chromaResults: any[] = [];
+    let totalFound = 0;
+
+    try {
+      // Phase 1: SQL Search
+      Logger.info('Phase 1: SQL database search...');
+      try {
+        sqlResults = await this.searchMemoriesBasic(query, categories);
+        Logger.info('SQL search completed', { resultsCount: sqlResults.length });
+      } catch (error) {
+        Logger.warn('SQL search failed, continuing with ChromaDB only', { error });
+        sqlResults = [];
+      }
+
+      // Phase 2: ChromaDB Semantic Search
+      Logger.info('Phase 2: ChromaDB semantic search...');
+      if (this.chromaClient) {
+        try {
+          const chromaResponse = await this.chromaClient.searchSimilar(query, 20, categories);
+          if (chromaResponse.results) {
+            chromaResults = chromaResponse.results;
+            Logger.info('ChromaDB search completed', { resultsCount: chromaResults.length });
+          } else {
+            Logger.warn('ChromaDB search returned no results', { error: chromaResponse.error });
+          }
+        } catch (error) {
+          Logger.warn('ChromaDB search failed', { error });
+          chromaResults = [];
+        }
+      } else {
+        Logger.warn('ChromaDB client not available, skipping semantic search');
+      }
+
+      // Phase 3: Merge and Deduplicate Results
+      Logger.info('Phase 3: Merging and deduplicating results...');
+      const mergedResults = this.mergeSearchResults(sqlResults, chromaResults);
+      totalFound = mergedResults.length;
+
+      Logger.info('Results merged', { 
+        sqlCount: sqlResults.length,
+        chromaCount: chromaResults.length,
+        mergedCount: totalFound
+      });
+
+      // Phase 4: Optional Reranking
+      let finalResults = mergedResults;
+      let reranked = false;
+
+      if (enableReranking && totalFound > 0) {
+        Logger.info('Phase 4: Applying reranking...', { strategy: rerankStrategy });
+        try {
+          finalResults = await this.rerankResults(query, mergedResults, rerankStrategy);
+          reranked = true;
+          Logger.success('Reranking completed', { 
+            originalCount: mergedResults.length,
+            finalCount: finalResults.length 
+          });
+        } catch (error) {
+          Logger.warn('Reranking failed, using original results', { error });
+          finalResults = mergedResults;
+        }
+      }
+
+      const executionTime = Date.now() - startTime;
+      
+      Logger.success('Intelligent search completed', {
+        totalFound,
+        reranked,
+        executionTime: `${executionTime}ms`
+      });
+
+      return {
+        results: finalResults,
+        sources: {
+          sql: { count: sqlResults.length, source: 'SQL Database' },
+          chroma: { count: chromaResults.length, source: 'ChromaDB Vector Search' }
+        },
+        reranked,
+        rerank_strategy: reranked ? rerankStrategy : undefined,
+        total_found: totalFound,
+        execution_time: executionTime
+      };
+
+    } catch (error) {
+      Logger.error('Intelligent search failed', { query, error });
+      
+      return {
+        results: [],
+        sources: {
+          sql: { count: 0, source: 'SQL Database (failed)' },
+          chroma: { count: 0, source: 'ChromaDB (failed)' }
+        },
+        reranked: false,
+        total_found: 0,
+        execution_time: Date.now() - startTime
+      };
+    }
+  }
+
+  /**
+   * Helper method to merge and deduplicate search results from different sources
+   */
+  private mergeSearchResults(sqlResults: any[], chromaResults: any[]): any[] {
+    const mergedMap = new Map<number, any>();
+    
+    // Add SQL results first
+    sqlResults.forEach(result => {
+      if (result.id) {
+        result.source = 'sql';
+        mergedMap.set(result.id, result);
+      }
+    });
+    
+    // Add ChromaDB results, avoiding duplicates
+    chromaResults.forEach(result => {
+      if (result.source_memory_id) {
+        const memoryId = parseInt(result.source_memory_id);
+        if (!mergedMap.has(memoryId)) {
+          // Convert ChromaDB result to standard format
+          const standardResult = {
+            id: memoryId,
+            category: result.source_category,
+            topic: result.source_topic,
+            content: result.content,
+            date: result.source_date,
+            created_at: result.source_created_at,
+            source: 'chroma',
+            concept_title: result.concept_title,
+            similarity: result.similarity || 0
+          };
+          mergedMap.set(memoryId, standardResult);
+        } else {
+          // Mark as found in both sources
+          const existing = mergedMap.get(memoryId);
+          existing.source = 'both';
+          existing.similarity = result.similarity || 0;
+        }
+      }
+    });
+    
+    return Array.from(mergedMap.values());
+  }
+
+  /**
+   * Rerank search results using different strategies
+   */
+  private async rerankResults(
+    query: string, 
+    results: any[], 
+    strategy: 'hybrid' | 'llm' | 'text'
+  ): Promise<any[]> {
+    Logger.debug('Reranking results', { strategy, resultCount: results.length });
+    
+    switch (strategy) {
+      case 'text':
+        return this.rerankByTextSimilarity(query, results);
+      
+      case 'llm':
+        if (this.analyzer) {
+          return await this.rerankWithLLM(query, results);
+        } else {
+          Logger.warn('LLM not available for reranking, falling back to text similarity');
+          return this.rerankByTextSimilarity(query, results);
+        }
+      
+      case 'hybrid':
+      default:
+        return this.rerankHybrid(query, results);
+    }
+  }
+
+  /**
+   * Text-based similarity reranking
+   */
+  private rerankByTextSimilarity(query: string, results: any[]): any[] {
+    const queryLower = query.toLowerCase();
+    const queryTerms = queryLower.split(/\s+/).filter(term => term.length > 2);
+    
+    return results.map(result => {
+      let score = 0;
+      const contentLower = (result.content || '').toLowerCase();
+      const topicLower = (result.topic || '').toLowerCase();
+      
+      // Topic match bonus
+      queryTerms.forEach(term => {
+        if (topicLower.includes(term)) score += 3;
+        if (contentLower.includes(term)) score += 1;
+      });
+      
+      // ChromaDB similarity bonus
+      if (result.similarity) {
+        score += result.similarity * 2;
+      }
+      
+      // Source bonus (both sources = higher relevance)
+      if (result.source === 'both') score += 1;
+      
+      return { ...result, rerank_score: score };
+    }).sort((a, b) => b.rerank_score - a.rerank_score);
+  }
+
+  /**
+   * LLM-based relevance reranking
+   */
+  private async rerankWithLLM(query: string, results: any[]): Promise<any[]> {
+    // This would use the SemanticAnalyzer to evaluate relevance
+    // For now, fallback to text similarity
+    Logger.debug('LLM reranking not yet implemented, using text similarity');
+    return this.rerankByTextSimilarity(query, results);
+  }
+
+  /**
+   * Hybrid reranking combining multiple signals
+   */
+  private rerankHybrid(query: string, results: any[]): any[] {
+    const textRanked = this.rerankByTextSimilarity(query, results);
+    
+    // Apply additional hybrid scoring
+    return textRanked.map((result, index) => {
+      let hybridScore = result.rerank_score;
+      
+      // Recency bonus
+      if (result.created_at) {
+        const daysSinceCreation = (Date.now() - new Date(result.created_at).getTime()) / (1000 * 60 * 60 * 24);
+        if (daysSinceCreation < 30) hybridScore += 0.5;
+      }
+      
+      // Position penalty (later results get slight penalty)
+      hybridScore -= index * 0.1;
+      
+      return { ...result, hybrid_score: hybridScore };
+    }).sort((a, b) => b.hybrid_score - a.hybrid_score);
+  }
+
+  /**
+   * Graph-Enhanced Search Pipeline
+   * Combines SQL + ChromaDB + Neo4j with relationship context
+   */
+  async searchMemoriesWithGraph(
+    query: string,
+    categories?: string[],
+    includeRelated: boolean = true,
+    maxRelationshipDepth: number = 2
+  ): Promise<GraphSearchResult> {
+    Logger.separator('Graph-Enhanced Search Pipeline (Base)');
+    Logger.info('Starting graph search', { 
+      query, 
+      categories, 
+      includeRelated, 
+      maxRelationshipDepth 
+    });
+
+    const startTime = Date.now();
+    let sqlResults: any[] = [];
+    let chromaResults: any[] = [];
+    let neo4jResults: any[] = [];
+    let relationships: any[] = [];
+    let relatedMemoriesCount = 0;
+
+    try {
+      // Phase 1: Basic Search (SQL + ChromaDB)
+      Logger.info('Phase 1: Basic multi-source search...');
+      const intelligentResult = await this.searchMemoriesIntelligent(
+        query, 
+        categories, 
+        false, // Disable reranking here, we'll do it later with graph context
+        'text'
+      );
+      
+      sqlResults = intelligentResult.results.filter(r => r.source === 'sql' || r.source === 'both');
+      chromaResults = intelligentResult.results.filter(r => r.source === 'chroma' || r.source === 'both');
+      
+      Logger.info('Basic search completed', { 
+        sqlCount: sqlResults.length,
+        chromaCount: chromaResults.length 
+      });
+
+      // Phase 2: Neo4j Graph Search
+      Logger.info('Phase 2: Neo4j graph search...');
+      if (this.neo4jClient) {
+        try {
+          // Extract concepts from query for semantic search
+          const queryTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 2);
+          
+          const neo4jResponse = await this.neo4jClient.searchMemoriesBySemanticConcepts(queryTerms, 10);
+          if (neo4jResponse.memories) {
+            neo4jResults = neo4jResponse.memories;
+            Logger.info('Neo4j search completed', { resultsCount: neo4jResults.length });
+          } else {
+            Logger.warn('Neo4j search returned no results', { error: neo4jResponse.error });
+          }
+        } catch (error) {
+          Logger.warn('Neo4j search failed', { error });
+          neo4jResults = [];
+        }
+      } else {
+        Logger.warn('Neo4j client not available, skipping graph search');
+      }
+
+      // Phase 3: Merge All Sources
+      Logger.info('Phase 3: Merging multi-source results...');
+      const primaryResults = this.mergeSearchResults(
+        intelligentResult.results, 
+        neo4jResults.map(result => ({ ...result, source: 'neo4j' }))
+      );
+
+      // Phase 4: Find Related Memories (if enabled)
+      if (includeRelated && this.neo4jClient && primaryResults.length > 0) {
+        Logger.info('Phase 4: Finding related memories via graph...', { maxDepth: maxRelationshipDepth });
+        
+        try {
+          const relatedMemoriesPromises = primaryResults.slice(0, 5).map(async result => {
+            if (result.id) {
+              return await this.neo4jClient!.getMemoryWithRelationships(
+                result.id, 
+                maxRelationshipDepth,
+                ['RELATED_TO', 'SIMILAR_TO', 'CONCEPT_SHARED']
+              );
+            }
+            return null;
+          });
+
+          const relatedResults = await Promise.allSettled(relatedMemoriesPromises);
+          
+          const allRelatedMemories: any[] = [];
+          const allRelationships: any[] = [];
+          
+          relatedResults.forEach(result => {
+            if (result.status === 'fulfilled' && result.value) {
+              if (result.value.memory) {
+                allRelatedMemories.push(result.value.memory);
+              }
+              if (result.value.relationships) {
+                allRelationships.push(...result.value.relationships);
+              }
+            }
+          });
+
+          // Merge related memories with primary results
+          const finalResults = this.mergeSearchResults(primaryResults, allRelatedMemories);
+          relationships = allRelationships;
+          relatedMemoriesCount = allRelatedMemories.length;
+
+          Logger.success('Related memories found', { 
+            relatedCount: relatedMemoriesCount,
+            relationshipsCount: relationships.length 
+          });
+
+        } catch (error) {
+          Logger.warn('Related memories search failed', { error });
+        }
+      }
+
+      // Phase 5: Graph-Context Reranking
+      Logger.info('Phase 5: Applying graph-context reranking...');
+      const finalResults = this.rerankWithGraphContext(query, primaryResults, relationships);
+
+      const executionTime = Date.now() - startTime;
+      const totalFound = finalResults.length;
+
+      Logger.success('Graph search completed', {
+        totalFound,
+        relatedMemoriesCount,
+        relationshipsCount: relationships.length,
+        executionTime: `${executionTime}ms`
+      });
+
+      return {
+        results: finalResults,
+        sources: {
+          sql: { count: sqlResults.length, source: 'SQL Database' },
+          chroma: { count: chromaResults.length, source: 'ChromaDB Vector Search' },
+          neo4j: { count: neo4jResults.length, source: 'Neo4j Graph Search' }
+        },
+        relationships,
+        graph_context: {
+          related_memories: relatedMemoriesCount,
+          relationship_depth: maxRelationshipDepth,
+          cluster_info: {
+            total_nodes_traversed: relationships.length,
+            relationship_types: [...new Set(relationships.map(r => r.type))]
+          }
+        },
+        total_found: totalFound,
+        execution_time: executionTime
+      };
+
+    } catch (error) {
+      Logger.error('Graph search failed', { query, error });
+      
+      return {
+        results: [],
+        sources: {
+          sql: { count: 0, source: 'SQL Database (failed)' },
+          chroma: { count: 0, source: 'ChromaDB (failed)' },
+          neo4j: { count: 0, source: 'Neo4j (failed)' }
+        },
+        relationships: [],
+        graph_context: {
+          related_memories: 0,
+          relationship_depth: 0
+        },
+        total_found: 0,
+        execution_time: Date.now() - startTime
+      };
+    }
+  }
+
+  /**
+   * Rerank results with graph context
+   */
+  private rerankWithGraphContext(query: string, results: any[], relationships: any[]): any[] {
+    // Start with text-based reranking
+    const textRanked = this.rerankByTextSimilarity(query, results);
+    
+    // Apply graph-based scoring
+    return textRanked.map(result => {
+      let graphScore = result.rerank_score || 0;
+      
+      // Relationship bonus
+      const memoryRelationships = relationships.filter(rel => 
+        rel.start_node_id === result.id || rel.end_node_id === result.id
+      );
+      
+      if (memoryRelationships.length > 0) {
+        graphScore += memoryRelationships.length * 0.5; // Bonus for being connected
+        
+        // Bonus for strong relationships
+        memoryRelationships.forEach(rel => {
+          if (rel.similarity && rel.similarity > 0.8) {
+            graphScore += 1;
+          }
+        });
+      }
+      
+      // Source diversity bonus
+      if (result.source === 'both') graphScore += 0.5;
+      if (result.source === 'neo4j') graphScore += 0.3; // Graph-native results get slight bonus
+      
+      return { ...result, graph_score: graphScore };
+    }).sort((a, b) => b.graph_score - a.graph_score);
+  }
+
+  // ...existing code...
 }

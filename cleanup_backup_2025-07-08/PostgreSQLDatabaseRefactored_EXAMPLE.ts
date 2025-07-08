@@ -194,6 +194,61 @@ export class PostgreSQLDatabaseRefactored extends MemoryPipelineBase {
     };
   }
 
+  // Implementation of abstract search methods from MemoryPipelineBase
+
+  async searchMemoriesBasic(query: string, categories?: string[]): Promise<any[]> {
+    Logger.debug('PostgreSQL basic search', { query, categories });
+    
+    let sql = `
+      SELECT id, category, topic, content, date, created_at 
+      FROM memories 
+      WHERE (content ILIKE $1 OR topic ILIKE $2)
+    `;
+    
+    const params: any[] = [`%${query}%`, `%${query}%`];
+    let paramIndex = 3;
+    
+    if (categories && categories.length > 0) {
+      const placeholders = categories.map(() => `$${paramIndex++}`).join(', ');
+      sql += ` AND category IN (${placeholders})`;
+      params.push(...categories);
+    }
+    
+    sql += ` ORDER BY created_at DESC LIMIT 50`;
+    
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(sql, params);
+      Logger.debug('PostgreSQL search completed', { resultCount: result.rows.length });
+      return result.rows;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getMemoriesByCategory(category: string, limit: number = 20): Promise<any[]> {
+    Logger.debug('PostgreSQL category search', { category, limit });
+    
+    this.validateCategory(category);
+    
+    const query = `
+      SELECT id, category, topic, content, date, created_at 
+      FROM memories 
+      WHERE category = $1 
+      ORDER BY created_at DESC 
+      LIMIT $2
+    `;
+    
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(query, [category, limit]);
+      Logger.debug('PostgreSQL category search completed', { category, resultCount: result.rows.length });
+      return result.rows;
+    } finally {
+      client.release();
+    }
+  }
+
   // Additional PostgreSQL-specific methods can be added here
   // ... (all other existing PostgreSQL methods)
 

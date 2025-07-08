@@ -5,7 +5,7 @@
  * Tests variable naming, format consistency, and proper data flow
  */
 
-import { PostgreSQLDatabase } from '../build/database/PostgreSQLDatabase.js';
+import { PostgreSQLDatabaseRefactored } from '../build/database/PostgreSQLDatabaseRefactored.js';
 import { ChromaDBClient } from '../build/vectordb/ChromaDBClient.js';
 import { Neo4jClient } from '../build/vectordb/Neo4jClient.js';
 import { Logger } from '../build/utils/Logger.js';
@@ -28,9 +28,8 @@ async function testSaveMemoryWithGraphConsistency() {
             password: process.env.POSTGRES_PASSWORD || 'password'
         };
         
-        database = new PostgreSQLDatabase(config);
-        await database.initialize();
-        console.log('✅ PostgreSQL Database ready');
+        database = new PostgreSQLDatabaseRefactored(config);
+        console.log('✅ PostgreSQL Database ready (refactored)');
         
         // 2. ChromaDB Setup
         console.log('🔄 Step 2: ChromaDB Initialization...');

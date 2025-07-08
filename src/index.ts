@@ -10,7 +10,6 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { SQLiteDatabase } from './database/SQLiteDatabase.js';
 import { DatabaseFactory, IMemoryDatabase } from './database/DatabaseFactory.js';
 import { SemanticAnalyzer } from './llm/SemanticAnalyzer.js';
 import { JobProcessor } from './jobs/JobProcessor.js';

@@ -1,6 +1,6 @@
 import { DatabaseConfig, DatabaseConfigManager } from './DatabaseConfig.js';
-import { SQLiteDatabase } from './SQLiteDatabase.js';
-import { PostgreSQLDatabase } from './PostgreSQLDatabase.js';
+import { SQLiteDatabaseRefactored } from './SQLiteDatabaseRefactored.js';
+import { PostgreSQLDatabaseRefactored } from './PostgreSQLDatabaseRefactored.js';
 import { Logger } from '../utils/Logger.js';
 
 // Unified interface for both database types
@@ -9,9 +9,9 @@ export interface IMemoryDatabase {
   getMemoriesByCategory(category: string, limit?: number): Promise<any[]>;
   saveNewMemory(category: string, topic: string, content: string): Promise<any>;
   getAllMemories?(limit?: number): Promise<any[]>;
-  searchMemories(searchTerm: string, categories?: string[]): Promise<any[]>;
+  searchMemoriesBasic(searchTerm: string, categories?: string[]): Promise<any[]>; // Updated from searchMemories
   getMemoryById(id: number): Promise<any | null>;
-  updateMemory(id: number, updates?: { category?: string; topic?: string; content?: string }, topic?: string, content?: string, category?: string): Promise<boolean | any>;
+  updateMemoryAdvanced?(id: number, updates?: { category?: string; topic?: string; content?: string }, topic?: string, content?: string, category?: string): Promise<boolean | any>; // Made optional
   deleteMemory(id: number): Promise<boolean | any>;
   getMemoryStats?(): Promise<any>;
   
@@ -51,6 +51,7 @@ export interface IMemoryDatabase {
   close?(): Promise<void>;
   testConnection?(): Promise<boolean>;
   initialize?(): Promise<void>;
+  healthCheck?(): Promise<{ status: string; details: any }>;
   
   // Properties
   analyzer: any;
@@ -81,7 +82,7 @@ export class DatabaseFactory {
           database: config.database,
           user: config.user
         });
-        const pgDatabase = new PostgreSQLDatabase({
+        const pgDatabase = new PostgreSQLDatabaseRefactored({
           host: config.host!,
           port: config.port!,
           database: config.database!,
@@ -95,14 +96,13 @@ export class DatabaseFactory {
         // Test the connection and initialize
         Logger.info('Testing PostgreSQL connection...');
         try {
-          const connectionTest = await pgDatabase.testConnection();
-          if (!connectionTest) {
-            throw new Error('PostgreSQL connection test failed');
+          const healthResult = await pgDatabase.healthCheck();
+          if (healthResult.status !== 'healthy') {
+            throw new Error(`PostgreSQL health check failed: ${healthResult.status}`);
           }
           Logger.success('PostgreSQL connection test passed');
           
-          Logger.info('Initializing PostgreSQL schema...');
-          await pgDatabase.initialize();
+          Logger.info('PostgreSQL schema already initialized during construction');
           
           this.instance = pgDatabase;
           Logger.success('PostgreSQL database initialized successfully');
@@ -119,15 +119,15 @@ export class DatabaseFactory {
           };
           
           Logger.info('Initializing SQLite database as fallback...', { path: fallbackConfig.sqliteDbPath });
-          const sqliteDatabase = new SQLiteDatabase(fallbackConfig.sqliteDbPath!);
-          this.instance = sqliteDatabase as any;
+          const sqliteDatabase = new SQLiteDatabaseRefactored(fallbackConfig.sqliteDbPath!);
+          this.instance = sqliteDatabase;
           Logger.success('SQLite database initialized successfully (fallback)');
         }
         
       } else if (config.type === 'sqlite') {
         Logger.info('Initializing SQLite database...', { path: config.sqliteDbPath });
-        const sqliteDatabase = new SQLiteDatabase(config.sqliteDbPath!);
-        this.instance = sqliteDatabase as any; // Type assertion for compatibility
+        const sqliteDatabase = new SQLiteDatabaseRefactored(config.sqliteDbPath!);
+        this.instance = sqliteDatabase;
         Logger.success('SQLite database initialized successfully');
         
       } else {
@@ -183,15 +183,16 @@ export class DatabaseFactory {
       if (config.type === 'postgresql') {
         Logger.debug('Performing PostgreSQL health check...');
         const db = await this.getInstance();
-        if (db.testConnection) {
-          const isHealthy = await db.testConnection();
+        if (db.healthCheck) {
+          const healthResult = await db.healthCheck();
           const result = {
             type: 'postgresql',
-            status: isHealthy ? 'healthy' : 'unhealthy',
+            status: healthResult.status,
             details: {
               host: config.host,
               port: config.port,
               database: config.database,
+              ...healthResult.details
             }
           };
           Logger.success('PostgreSQL health check completed', { status: result.status });
