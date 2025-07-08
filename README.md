@@ -131,6 +131,31 @@ cp .env.example .env
 - `get_memory_graph_context` - Beziehungsnetzwerk anzeigen
 - `get_graph_statistics` - Netzwerk-Statistiken
 
+## LLM Client Factory Architecture
+
+Baby-SkyNet verwendet eine zentrale **LLMClientFactory** zur Verwaltung aller LLM-Provider:
+
+### Unterstützte Provider
+- **Anthropic Claude**: `claude-3-sonnet`, `claude-3-haiku`, etc.
+- **Ollama Local Models**: `llama2`, `mistral`, etc.
+
+### Automatische Provider-Erkennung
+```typescript
+import { LLMClientFactory } from './llm/LLMClientFactory.js';
+
+// Automatische Erkennung basierend auf Modellname
+const anthropicClient = LLMClientFactory.createClient('claude-3-sonnet');
+const ollamaClient = LLMClientFactory.createClient('llama2');
+```
+
+### SemanticAnalyzer Integration
+Der SemanticAnalyzer nutzt die Factory automatisch:
+```typescript
+import { SemanticAnalyzer } from './llm/SemanticAnalyzer.js';
+
+const analyzer = new SemanticAnalyzer('claude-3-sonnet'); // Verwendet Factory intern
+```
+
 ## 🧪 Testing
 
 Baby-SkyNet verfügt über eine umfassende Test-Suite mit 18+ Tests:

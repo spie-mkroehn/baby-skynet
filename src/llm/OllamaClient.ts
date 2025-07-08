@@ -1,9 +1,9 @@
 import fetch from 'node-fetch';
 import { Logger } from '../utils/Logger.js';
-
+import { ILLMClient } from './types.js';
 
 // Ollama Local LLM Client
-export class OllamaClient {
+export class OllamaClient implements ILLMClient {
   private baseUrl: string;
   private llmModel: string;
   

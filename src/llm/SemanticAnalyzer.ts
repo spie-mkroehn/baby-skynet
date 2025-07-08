@@ -1,14 +1,10 @@
-import { OllamaClient } from './OllamaClient.js';
-import { AnthropicClient } from './AnthropicClient.js';
+import { LLMClientFactory } from './LLMClientFactory.js';
+import { ILLMClient } from './types.js';
 import { Logger } from '../utils/Logger.js';
-
-const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
-const OLLAMA_BASE_URL = 'http://localhost:11434';
 
 // Semantic Analysis Engine
 export class SemanticAnalyzer {
-  private ollama: OllamaClient;
-  private anthropic: AnthropicClient;
+  private llmClient: ILLMClient;
   private llmModel: string;
   private isAnthropic: boolean;
   
@@ -33,8 +29,9 @@ export class SemanticAnalyzer {
   
     this.llmModel = llmModel;
     this.isAnthropic = this.llmModel.startsWith('claude-');
-    this.ollama = new OllamaClient(OLLAMA_BASE_URL, this.llmModel);
-    this.anthropic = new AnthropicClient(ANTHROPIC_BASE_URL, this.llmModel);
+    
+    // Use factory to create the appropriate client
+    this.llmClient = LLMClientFactory.createClient(this.llmModel);
     
     Logger.success('SemanticAnalyzer initialized successfully', { 
       model: this.llmModel, 
@@ -44,7 +41,7 @@ export class SemanticAnalyzer {
   
   async testConnection() {
     Logger.info('Testing LLM connection', { model: this.llmModel, provider: this.isAnthropic ? 'Anthropic' : 'Ollama' });
-    const result = this.isAnthropic ? this.anthropic.testConnection() : this.ollama.testConnection();
+    const result = this.llmClient.testConnection();
     
     result.then(res => {
       if (res.status === 'ready') {
@@ -66,7 +63,7 @@ export class SemanticAnalyzer {
       promptLength: prompt.length 
     });
     
-    const result = this.isAnthropic ? this.anthropic.generateResponse(prompt) : this.ollama.generateResponse(prompt);
+    const result = this.llmClient.generateResponse(prompt);
     
     result.then(res => {
       if (res.error) {

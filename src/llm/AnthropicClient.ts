@@ -1,8 +1,9 @@
 import fetch from 'node-fetch';
 import { Logger } from '../utils/Logger.js';
+import { ILLMClient } from './types.js';
 
 // Anthropic API Client
-export class AnthropicClient {
+export class AnthropicClient implements ILLMClient {
   private baseUrl: string;
   private llmModel: string;
   private apiKey: string;
