@@ -38,7 +38,7 @@ export interface IMemoryDatabase {
   
   // Graph statistics and advanced features
   getGraphStatistics?(): Promise<any>;
-  searchMemoriesIntelligent?(query: string, categories?: string[]): Promise<any>;
+  searchMemoriesIntelligent?(query: string, categories?: string[], enableReranking?: boolean, rerankStrategy?: 'hybrid' | 'llm' | 'text'): Promise<any>;
   searchMemoriesWithGraph?(query: string, categories?: string[], includeRelated?: boolean, maxRelationshipDepth?: number): Promise<any>;
   saveMemoryWithGraph?(category: string, topic: string, content: string, forceRelationships?: any[]): Promise<any>;
   searchMemoriesWithReranking?(query: string, categories?: string[], rerankStrategy?: string): Promise<any>;

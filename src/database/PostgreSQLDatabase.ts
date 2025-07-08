@@ -812,7 +812,10 @@ export class PostgreSQLDatabase {
     }
   }
   
-  async searchMemoriesIntelligent(query: string, categories?: string[]): Promise<any> {
+  async searchMemoriesIntelligent(query: string, categories?: string[], enableReranking: boolean = false, rerankStrategy: 'hybrid' | 'llm' | 'text' = 'hybrid'): Promise<any> {
+    if (enableReranking) {
+      return await this.searchMemoriesWithReranking(query, categories, rerankStrategy);
+    }
     return await this.searchMemoriesAdvanced(query, categories);
   }
   

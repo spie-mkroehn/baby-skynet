@@ -38,11 +38,28 @@ export class ContainerManager {
   }
 
   /**
+   * Get the current container engine being used
+   */
+  getContainerEngine(): 'podman' | 'docker' {
+    return this.containerEngine;
+  }
+
+  /**
    * Check if container engine (podman/docker) is available
    */
   async isContainerEngineAvailable(): Promise<boolean> {
     try {
       await execAsync(`${this.containerEngine} --version`);
+      
+      // For podman, also check if machine is running
+      if (this.containerEngine === 'podman') {
+        const machineRunning = await this.isPodmanMachineRunning();
+        if (!machineRunning) {
+          Logger.debug('Podman is available but machine is not running', { engine: this.containerEngine });
+          return false;
+        }
+      }
+      
       return true;
     } catch (error) {
       Logger.debug('Container engine not available', { 
@@ -257,6 +274,12 @@ export class ContainerManager {
       return result;
     }
 
+    // Ensure Podman Machine is running (for podman engine only)
+    if (!await this.ensurePodmanMachineRunning()) {
+      Logger.error('Failed to start Podman machine - container operations will fail');
+      return result;
+    }
+
     for (const containerConfig of requiredContainers) {
       const status = await this.getContainerStatus(containerConfig.name);
       
@@ -304,5 +327,84 @@ export class ContainerManager {
     });
 
     return result;
+  }
+
+  /**
+   * Check if Podman Machine is running (only for podman engine on Windows/macOS)
+   */
+  async isPodmanMachineRunning(): Promise<boolean> {
+    if (this.containerEngine !== 'podman') {
+      return true; // Docker doesn't use machines
+    }
+
+    try {
+      const { stdout } = await execAsync('podman machine list --format json');
+      const machines = JSON.parse(stdout);
+      
+      // Check if any machine is running
+      const runningMachine = machines.find((machine: any) => machine.Running === true);
+      
+      if (runningMachine) {
+        Logger.debug('Podman machine is running', { machineName: runningMachine.Name });
+        return true;
+      } else {
+        Logger.debug('No running Podman machine found');
+        return false;
+      }
+    } catch (error) {
+      Logger.debug('Failed to check Podman machine status', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Start the default Podman Machine (only for podman engine)
+   */
+  async startPodmanMachine(): Promise<boolean> {
+    if (this.containerEngine !== 'podman') {
+      Logger.debug('Skipping Podman machine start - not using podman engine');
+      return true; // Docker doesn't need machine start
+    }
+
+    try {
+      Logger.info('Starting Podman machine...');
+      
+      // Try to start the default machine
+      await execAsync('podman machine start');
+      
+      Logger.success('Podman machine started successfully');
+      
+      // Wait a moment for the machine to fully initialize
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      return true;
+    } catch (error) {
+      Logger.error('Failed to start Podman machine', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Ensure Podman Machine is running before container operations
+   */
+  async ensurePodmanMachineRunning(): Promise<boolean> {
+    if (this.containerEngine !== 'podman') {
+      return true; // Docker doesn't need machine management
+    }
+
+    Logger.debug('Checking Podman machine status...');
+    
+    const isRunning = await this.isPodmanMachineRunning();
+    if (isRunning) {
+      Logger.debug('Podman machine is already running');
+      return true;
+    }
+
+    Logger.info('Podman machine not running, attempting to start...');
+    return await this.startPodmanMachine();
   }
 }

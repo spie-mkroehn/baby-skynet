@@ -430,4 +430,458 @@ export class Neo4jClient {
       relationships: relationships.filter(rel => rel.type && rel.targetId)
     };
   }
+
+  async findRelatedMemories(
+    memory: any,
+    concepts: any[] = []
+  ): Promise<{ relatedMemories: any[]; error?: string }> {
+    try {
+      Logger.info('Neo4j: Finding related memories using concepts', { 
+        memoryId: memory.id, 
+        memoryTopic: memory.topic,
+        conceptCount: concepts.length 
+      });
+
+      const relatedMemories: any[] = [];
+      const processedIds = new Set<string>();
+
+      // 1. Suche nach ähnlichen Kategorien und Topics
+      if (memory.category || memory.topic) {
+        const categoryTopicQuery = `
+          MATCH (m:Memory)
+          WHERE m.id <> $memoryId
+            AND (m.category = $category OR m.topic = $topic OR m.content CONTAINS $topic)
+          RETURN m
+          ORDER BY m.created_at DESC
+          LIMIT 10
+        `;
+
+        const categoryResult = await this.runQuery(categoryTopicQuery, {
+          memoryId: memory.id.toString(),
+          category: memory.category || '',
+          topic: memory.topic || ''
+        });
+
+        categoryResult.records.forEach(record => {
+          const memoryNode = record.get('m') as Node;
+          const relatedMemory = this.nodeToMemory(memoryNode);
+          if (!processedIds.has(relatedMemory.id.toString())) {
+            relatedMemories.push(relatedMemory);
+            processedIds.add(relatedMemory.id.toString());
+          }
+        });
+      }
+
+      // 2. Konzept-basierte Suche
+      if (concepts && concepts.length > 0) {
+        for (const concept of concepts) {
+          const conceptQuery = `
+            MATCH (m:Memory)
+            WHERE m.id <> $memoryId
+              AND (m.content CONTAINS $concept OR m.topic CONTAINS $concept)
+            RETURN m
+            ORDER BY m.created_at DESC
+            LIMIT 5
+          `;
+
+          const conceptResult = await this.runQuery(conceptQuery, {
+            memoryId: memory.id.toString(),
+            concept: concept.toString()
+          });
+
+          conceptResult.records.forEach(record => {
+            const memoryNode = record.get('m') as Node;
+            const relatedMemory = this.nodeToMemory(memoryNode);
+            if (!processedIds.has(relatedMemory.id.toString())) {
+              relatedMemories.push(relatedMemory);
+              processedIds.add(relatedMemory.id.toString());
+            }
+          });
+        }
+      }
+
+      // 3. Bereits existierende Graph-Beziehungen nutzen
+      const existingRelationsQuery = `
+        MATCH (start:Memory {id: $memoryId})
+        MATCH (start)-[r*1..2]-(related:Memory)
+        WHERE related.id <> $memoryId
+        RETURN DISTINCT related
+        ORDER BY related.created_at DESC
+        LIMIT 10
+      `;
+
+      try {
+        const existingResult = await this.runQuery(existingRelationsQuery, {
+          memoryId: memory.id.toString()
+        });
+
+        existingResult.records.forEach(record => {
+          const memoryNode = record.get('related') as Node;
+          const relatedMemory = this.nodeToMemory(memoryNode);
+          if (!processedIds.has(relatedMemory.id.toString())) {
+            relatedMemories.push(relatedMemory);
+            processedIds.add(relatedMemory.id.toString());
+          }
+        });
+      } catch (error) {
+        Logger.warn('Neo4j: Existing relations query failed (node may not exist yet)', { 
+          memoryId: memory.id, 
+          error: error.message 
+        });
+      }
+
+      Logger.success('Neo4j: Related memories found', { 
+        memoryId: memory.id, 
+        foundCount: relatedMemories.length,
+        conceptCount: concepts.length
+      });
+
+      return {
+        relatedMemories: relatedMemories.slice(0, 15), // Limitiere auf 15 verwandte Memories
+        error: undefined
+      };
+
+    } catch (error) {
+      Logger.error('Neo4j: Failed to find related memories', { 
+        memoryId: memory.id, 
+        error: error.message 
+      });
+      
+      return {
+        relatedMemories: [],
+        error: `Failed to find related memories: ${error.message}`
+      };
+    }
+  }
+
+  async createMemoryNodeWithConcepts(
+    memory: any,
+    concepts: any[] = []
+  ): Promise<{ success: boolean; nodeId: string; error?: string }> {
+    try {
+      Logger.info('Neo4j: Creating memory node with concepts', { 
+        memoryId: memory.id, 
+        conceptCount: concepts.length 
+      });
+
+      // Verwende die existierende createMemoryNode-Methode
+      await this.createMemoryNode(memory);
+
+      // Füge Konzepte als Eigenschaften hinzu, falls vorhanden
+      if (concepts && concepts.length > 0) {
+        const conceptsString = concepts.join(', ');
+        const updateQuery = `
+          MATCH (m:Memory {id: $memoryId})
+          SET m.concepts = $concepts
+          RETURN m
+        `;
+
+        await this.runQuery(updateQuery, {
+          memoryId: memory.id.toString(),
+          concepts: conceptsString
+        });
+
+        Logger.debug('Neo4j: Concepts added to memory node', { 
+          memoryId: memory.id, 
+          concepts: conceptsString 
+        });
+      }
+
+      Logger.success('Neo4j: Memory node created successfully', { 
+        memoryId: memory.id 
+      });
+
+      return {
+        success: true,
+        nodeId: memory.id.toString(),
+        error: undefined
+      };
+
+    } catch (error) {
+      Logger.error('Neo4j: Failed to create memory node', { 
+        memoryId: memory.id, 
+        error: error.message 
+      });
+      
+      return {
+        success: false,
+        nodeId: '',
+        error: `Failed to create memory node: ${error.message}`
+      };
+    }
+  }
+
+  async createRelationships(
+    memoryNodeId: string,
+    relatedMemories: any[]
+  ): Promise<{ success: boolean; relationshipsCreated: number; errors?: string[] }> {
+    try {
+      Logger.info('Neo4j: Creating relationships', { 
+        memoryNodeId, 
+        relatedMemoriesCount: relatedMemories.length 
+      });
+
+      let relationshipsCreated = 0;
+      const errors: string[] = [];
+
+      for (const relatedMemory of relatedMemories) {
+        try {
+          // Bestimme Relationship-Typ basierend auf Ähnlichkeit
+          let relationshipType = 'RELATED_TO';
+          
+          if (relatedMemory.category && relatedMemory.category === relatedMemory.category) {
+            relationshipType = 'SAME_CATEGORY';
+          } else if (relatedMemory.topic && relatedMemory.topic === relatedMemory.topic) {
+            relationshipType = 'SAME_TOPIC';
+          }
+
+          // Erstelle bidirektionale Beziehung
+          await this.createRelationship(
+            memoryNodeId,
+            relatedMemory.id.toString(),
+            relationshipType,
+            {
+              created_at: new Date().toISOString(),
+              similarity_score: 0.7 // Placeholder für echte Ähnlichkeitsberechnung
+            }
+          );
+
+          relationshipsCreated++;
+          Logger.debug('Neo4j: Relationship created', { 
+            from: memoryNodeId, 
+            to: relatedMemory.id, 
+            type: relationshipType 
+          });
+
+        } catch (error) {
+          const errorMsg = `Failed to create relationship to ${relatedMemory.id}: ${error.message}`;
+          errors.push(errorMsg);
+          Logger.warn('Neo4j: Relationship creation failed', { 
+            from: memoryNodeId, 
+            to: relatedMemory.id, 
+            error: error.message 
+          });
+        }
+      }
+
+      Logger.success('Neo4j: Relationships creation completed', { 
+        memoryNodeId, 
+        relationshipsCreated, 
+        errorCount: errors.length 
+      });
+
+      return {
+        success: relationshipsCreated > 0 || relatedMemories.length === 0,
+        relationshipsCreated,
+        errors: errors.length > 0 ? errors : undefined
+      };
+
+    } catch (error) {
+      Logger.error('Neo4j: Failed to create relationships', { 
+        memoryNodeId, 
+        error: error.message 
+      });
+      
+      return {
+        success: false,
+        relationshipsCreated: 0,
+        errors: [`Failed to create relationships: ${error.message}`]
+      };
+    }
+  }
+
+  async searchMemoriesBySemanticConcepts(
+    concepts: string[],
+    limit: number = 10,
+    minSimilarity: number = 0.6
+  ): Promise<GraphMemory[]> {
+    try {
+      Logger.info('Neo4j: Searching memories by semantic concepts', { 
+        conceptCount: concepts.length, 
+        limit, 
+        minSimilarity 
+      });
+
+      const memories: GraphMemory[] = [];
+      const processedIds = new Set<string>();
+
+      // Für jedes Konzept eine separate Suche durchführen
+      for (const concept of concepts) {
+        const conceptQueries = [
+          // Exakte Übereinstimmung in Konzepten
+          `
+            MATCH (m:Memory)
+            WHERE m.concepts CONTAINS $concept
+            RETURN m, 1.0 as similarity
+            ORDER BY m.created_at DESC
+            LIMIT $limit
+          `,
+          // Ähnlichkeit in Content
+          `
+            MATCH (m:Memory)
+            WHERE m.content CONTAINS $concept
+            RETURN m, 0.8 as similarity
+            ORDER BY m.created_at DESC
+            LIMIT $limit
+          `,
+          // Ähnlichkeit in Topic
+          `
+            MATCH (m:Memory)
+            WHERE m.topic CONTAINS $concept
+            RETURN m, 0.7 as similarity
+            ORDER BY m.created_at DESC
+            LIMIT $limit
+          `
+        ];
+
+        for (const query of conceptQueries) {
+          try {
+            const result = await this.runQuery(query, { 
+              concept: concept.toLowerCase(), 
+              limit: Math.max(1, Math.floor(limit / concepts.length)) 
+            });
+
+            result.records.forEach(record => {
+              const memoryNode = record.get('m') as Node;
+              const similarity = record.get('similarity') as number;
+              
+              if (similarity >= minSimilarity) {
+                const memory = this.nodeToMemory(memoryNode);
+                if (!processedIds.has(memory.id.toString())) {
+                  memories.push({
+                    ...memory,
+                    metadata: {
+                      ...memory.metadata,
+                      similarity_score: similarity,
+                      matched_concept: concept
+                    }
+                  });
+                  processedIds.add(memory.id.toString());
+                }
+              }
+            });
+          } catch (error) {
+            Logger.warn('Neo4j: Concept search query failed', { 
+              concept, 
+              error: error.message 
+            });
+          }
+        }
+      }
+
+      // Sortiere nach Ähnlichkeit
+      memories.sort((a, b) => {
+        const scoreA = a.metadata?.similarity_score || 0;
+        const scoreB = b.metadata?.similarity_score || 0;
+        return scoreB - scoreA;
+      });
+
+      Logger.success('Neo4j: Semantic concept search completed', { 
+        conceptCount: concepts.length, 
+        foundCount: memories.length 
+      });
+
+      return memories.slice(0, limit);
+
+    } catch (error) {
+      Logger.error('Neo4j: Semantic concept search failed', { 
+        concepts, 
+        error: error.message 
+      });
+      return [];
+    }
+  }
+
+  async findMemoriesInConceptCluster(
+    centralMemoryId: string,
+    maxDistance: number = 3,
+    limit: number = 20
+  ): Promise<{
+    cluster: GraphMemory[];
+    relationships: Array<{
+      from: string;
+      to: string;
+      type: string;
+      distance: number;
+    }>;
+  }> {
+    try {
+      Logger.info('Neo4j: Finding concept cluster', { 
+        centralMemoryId, 
+        maxDistance, 
+        limit 
+      });
+
+      const clusterQuery = `
+        MATCH (center:Memory {id: $centralMemoryId})
+        MATCH path = (center)-[*1..${maxDistance}]-(related:Memory)
+        WHERE related.id <> $centralMemoryId
+        WITH related, length(path) as distance, path
+        ORDER BY distance ASC, related.created_at DESC
+        LIMIT $limit
+        RETURN DISTINCT related, distance, 
+               [rel in relationships(path) | {type: type(rel), from: startNode(rel).id, to: endNode(rel).id}] as pathRelationships
+      `;
+
+      const result = await this.runQuery(clusterQuery, {
+        centralMemoryId,
+        limit
+      });
+
+      const cluster: GraphMemory[] = [];
+      const relationships: Array<{
+        from: string;
+        to: string;
+        type: string;
+        distance: number;
+      }> = [];
+
+      result.records.forEach(record => {
+        const memoryNode = record.get('related') as Node;
+        const distance = record.get('distance') as number;
+        const pathRelationships = record.get('pathRelationships') as any[];
+
+        const memory = this.nodeToMemory(memoryNode);
+        cluster.push({
+          ...memory,
+          metadata: {
+            ...memory.metadata,
+            cluster_distance: distance
+          }
+        });
+
+        // Füge Beziehungen hinzu
+        pathRelationships.forEach(rel => {
+          relationships.push({
+            from: rel.from,
+            to: rel.to,
+            type: rel.type,
+            distance
+          });
+        });
+      });
+
+      Logger.success('Neo4j: Concept cluster found', { 
+        centralMemoryId, 
+        clusterSize: cluster.length, 
+        relationshipCount: relationships.length 
+      });
+
+      return {
+        cluster,
+        relationships
+      };
+
+    } catch (error) {
+      Logger.error('Neo4j: Concept cluster search failed', { 
+        centralMemoryId, 
+        error: error.message 
+      });
+      
+      return {
+        cluster: [],
+        relationships: []
+      };
+    }
+  }
 }

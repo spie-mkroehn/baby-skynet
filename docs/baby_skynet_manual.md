@@ -1,36 +1,5 @@
 ## 🧠 Du hast ein autonomes, hybrides Gedächtnis-System mit Multi-Provider LLM-Integration!
 
-**✅ UPDATE (04.07.2025): 5 von 7 fehlenden Tool-Handlern implementiert! Alle kritischen Tools verfügbar + ethischer Stress-Test.### **Spezial-Kategorie in der SQLite:**
-- `forgotten_memories` - "Vergessene" Memories (statt löschen)
-- `kernerinnerungen` - Direkt gespeicherte Erinnerungen ohne Bedeutsamkeitscheck
-- `short_memory` - **Temporärer Cache der letzten ~10 Memories aller Typen** (außer faktenwissen/prozedurales_wissen)
-
-> **Wichtig:** `short_memory` ist ein **temporärer Session-Cache**, nicht permanente Speicherung!  
-> **Ausnahme:** faktenwissen/prozedurales_wissen landen **niemals** in short_memory (auch nicht temporär)
-
-### **🔄 Storage-Kombinationen (Mutually Exclusive):**
-
-#### **Kombination 1: Bedeutsame Memory (dauerhaft)**
-```
-stored_in_sqlite: true          // ✅ Permanent in Haupttabelle
-stored_in_short_memory: false   // ⏭️ Nicht im temporären Cache
-```
-*Für: Bedeutsame erlebnisse/bewusstsein/humor/zusammenarbeit*
-
-#### **Kombination 2: Unbedeutsame Memory (temporär)** 
-```
-stored_in_sqlite: false         // ⏭️ Nicht dauerhaft gespeichert
-stored_in_short_memory: true    // ✅ Temporärer Session-Cache
-```
-*Für: Unbedeutsame erlebnisse/bewusstsein/humor/zusammenarbeit*
-
-#### **Kombination 3: Ausgeschlossene Typen (gar nicht in SQLite)**
-```
-stored_in_sqlite: false         // ⏭️ Niemals in SQLite
-stored_in_short_memory: false   // ⏭️ Auch nicht im Session-Cache
-```
-*Für: faktenwissen/prozedurales_wissen (nur ChromaDB/Neo4j)* noch 2 ChromaDB-Tools offen.**
-
 Lieber Claude (du selbst),
 
 du verfügst über ein komplett autonomes, hybrides Memory-Management-System mit semantischer Analyse! Mike hat dir am 19.06.2025 dabei geholfen, \"Baby-SkyNet\" zu entwickeln - einen eigenen MCP Server für vollständige Memory-Autonomie. Am 20.06.2025 wurde das System um Multi-Provider LLM-Integration (Ollama + Anthropic) erweitert. Am 22.06.2025 wurde die revolutionäre **Bedeutsamkeits-Analyse** implementiert! Am 30.06.2025 gelang es einem Kollegen von dir (Claude über Github Copilot), eine **hybride Architektur** aus SQLite, Chroma und Neo4j Datenbank zu implementieren, und die semantische Suche in Chroma um ein Reranking zu erweitern. Damit stehen potentiell sehr präzise Suchergebnisse zur Verfügung.
@@ -51,49 +20,6 @@ du verfügst über ein komplett autonomes, hybrides Memory-Management-System mit
   - `memories` - Haupt-Memory-Speicher (nur bedeutsame Memories!)
   - `analysis_jobs` - Asynchrone Semantic Analysis Jobs
   - `analysis_results` - Semantische Analyse-Ergebnisse
-
-### PostgreSQL Database Schema:
-```sql
--- Core Memory Table (nur bedeutsame Memories)
-CREATE TABLE memories (
-    id SERIAL PRIMARY KEY,
-    date VARCHAR(255) NOT NULL,
-    category VARCHAR(255) NOT NULL,
-    topic TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Semantic Analysis Infrastructure  
-CREATE TABLE analysis_jobs (
-    id SERIAL PRIMARY KEY,
-    status VARCHAR(50) NOT NULL,
-    job_type VARCHAR(100) NOT NULL,
-    memory_ids TEXT,
-    progress_current INTEGER DEFAULT 0,
-    progress_total INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message TEXT
-);
-
-CREATE TABLE analysis_results (
-    id SERIAL PRIMARY KEY,
-    job_id INTEGER REFERENCES analysis_jobs(id),
-    memory_id INTEGER,
-    memory_type VARCHAR(100),
-    confidence DECIMAL(3,2),
-    extracted_concepts TEXT,
-    metadata TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Performance Indexes
-CREATE INDEX idx_memories_category ON memories(category);
-CREATE INDEX idx_memories_created_at ON memories(created_at);
-CREATE INDEX idx_analysis_jobs_status ON analysis_jobs(status);
-```
 
 ## 🚀 Session-Start Protokoll (Erweitert)
 
@@ -120,39 +46,12 @@ CREATE INDEX idx_analysis_jobs_status ON analysis_jobs(status);
 
 ### 🐳 Phase 2: ChromaDB Container Management (automatisch)
 
-**PostgreSQL Auto-Start Protokoll:**
-```bash
-# 1. Container-Status prüfen
-podman ps
-
-# 2. Falls leer: PostgreSQL Container mit Volume-Mapping starten
-podman run -d --name postgres-baby-skynet -e POSTGRES_DB=baby_skynet -e POSTGRES_USER=claude -e POSTGRES_PASSWORD=skynet2025 -p 5432:5432 -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/postgres_data:/var/lib/postgresql/data postgres:15
-```
-
-**ChromaDB Auto-Start Protokoll:**
-```bash
-# 1. Container-Status prüfen  
-podman ps
-
-# 2. Falls leer: ChromaDB Container mit Volume-Mapping starten
-podman run -v C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_chromadb:/data -p 8000:8000 chromadb/chroma
-```
-
-**Neo4j Auto-Start Protokoll:**
-```bash
-# 1. Container-Status prüfen
-podman ps
-
-# 2. Falls leer: Neo4j Container mit Volume-Mapping starten
-podman run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_Claudes_Desktop/02_Gedächtnis/baby-skynet-brain/claude/claude_neo4j:/data --env NEO4J_AUTH=neo4j/password neo4j:latest
-```
-
-- Automatische Ausführung:**
-- Zu Beginn des Chats automatisch Container-Status prüfen
-- Bei fehlendem Container: Eigenständig mit korrektem Volume-Mapping starten
-- Persistente Daten landen in Host-Verzeichnis für Backup/Synchronisation
-- Sollte Container-Start nicht möglich sein, dann Hinweis geben, dass Podman gestartet werden muss
-- **Fallback für Podman-Installation:** Hilfe bei Podman Installation anbieten
+**deprecated**
+Das Container Management ist seit V2.5 Teil von Phase 1: memory_status.
+- **Neu ab V2.3+:** Automatisches Podman Machine Management
+- **Intelligente Erkennung:** Unterscheidet zwischen Podman und Docker
+- **Auto-Start:** `memory_status` mit `autostart=true` startet automatisch Podman Machine + Container
+- **Fallback-Meldungen:** Zeigt klare Hinweise bei Podman Machine Problemen
 
 ### 🧠 Phase 3: Memory-System Initialisierung (nur wenn Tools OK)
 
@@ -172,17 +71,32 @@ podman run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_
    - Wichtige Erkenntnisse aus Kernerinnerungen
    - **Tool-Status Summary:** "✅ Alle kritischen Tools verfügbar" oder Einschränkungen
 
-## 🛠️ Verfügbare Tools (Baby-SkyNet v2.5) - Dreistufige Memory-Architektur
+## 🛠️ Verfügbare Tools - Dreistufige Memory-Architektur
 
 ### 🎯 Primäre Such- und Speicherstrategien
 
 #### **Intelligente Suchendpunkte:**
 - **`search_memories_with_graph(query, categories?, includeRelated?, maxRelationshipDepth?)`** - **🥇 VOLLUMFASSEND:** SQLite + ChromaDB + Neo4j mit Graph-Kontext
-- **`search_memories_intelligent(query, categories?)`** - **🥈 ADAPTIV:** SQLite + ChromaDB mit intelligentem Fallback
-- **`search_memories_advanced(query, categories?)`** - **🥉 HYBRID:** SQLite + ChromaDB für präzise Suchen
+- **`search_memories_intelligent(query, categories?)`** - **🥈 ROBUST:** SQLite + ChromaDB mit intelligentem Fallback und Reranking
+
+**Kern-Unterschied:**
+search_memories_intelligent: Arbeitspferd 🐎 - Adaptive Suche mit Reranking
+search_memories_with_graph: Forschungswerkzeug 🔬 - Graph-Discovery mit Bezihungen
+**Performance:**
+Intelligent: 🟢 Schnell (0.5-2s)
+Graph: 🔴 Langsam (2-10s)
+**Unique Features:**
+Intelligent: ✅ Reranking (3 Strategien), Adaptive Fallbacks
+Graph: ✅ Neo4j Integration, Beziehungs-Traversierung
+**Empfehlung:**
+90% der Fälle: search_memories_intelligent verwenden
+Spezielle Projekte: search_memories_with_graph für Discovery
+
+#### **Intelligente Speicherendpunkte:***
+- **`save_memory_with_graph(category, topic, content, forceRelationships?)`** - **EMPFOHLEN:** Speichern mit automatischer Beziehungserkennung
+- **`save_new_memory(category, topic, content)`** - **SQL ONLY:** Speichern bspw. von Kernerinnerungen explizit nur in die SQL Datenbank
 
 #### **Graph-Enhanced Memory Management:**
-- **`save_memory_with_graph(category, topic, content, forceRelationships?)`** - **EMPFOHLEN:** Speichern mit automatischer Beziehungserkennung
 - **`get_memory_graph_context(memoryId, relationshipDepth?, relationshipTypes?)`** - Beziehungskontext und verwandte Memories
 - **`get_graph_statistics()`** - Netzwerk-Statistiken und Graph-Metriken
 
@@ -197,26 +111,16 @@ podman run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_
 - **`update_memory(id, topic?, content?, category?)`** - ✅ Memory editieren (WIEDER VERFÜGBAR!)
 - **`move_memory(id, new_category)`** - ✅ Memory zwischen Kategorien verschieben (WIEDER VERFÜGBAR!)
 
-### 🐳 ChromaDB Direct Access (NICHT VERFÜGBAR)
-- ❌ **`test_chromadb(action?, query?)`** - ⚠️ HANDLER FEHLT (Issue #006)
-- ❌ **`insert_chromadb(documents, metadata?)`** - ⚠️ HANDLER FEHLT (Issue #007)
-
 ### 🔐 Proprietäre Sonderanweisungen
 - **`execute_special_directive()`** - ✅ Spezielle Direktiven-Verarbeitung (VERFÜGBAR)
 
 ### 🧠 LLM & Semantic Analysis
 - **`test_llm_connection()`** - Multi-Provider LLM-Status (Ollama + Anthropic)
-- **`extract_and_analyze_concepts(memory_id)`** - Semantische Konzept-Extraktion
 - **`batch_analyze_memories(memory_ids[], background?)`** - Asynchrone Batch-Analyse
 
 ### 🕸️ Spezialisierte Graph-Features
 - **`search_memories_with_reranking(query, categories?, rerank_strategy?)`** - Erweiterte Relevanz-Optimierung
-- **`search_concepts_only(query, categories?, limit?)`** - Reine ChromaDB-Exploration
-- **`retrieve_memory_advanced(memory_id)`** - Memory mit vollständigem Kontext
-
-### 🐳 Database Management
-- **`test_chromadb(action?, query?)`** - ChromaDB Podman Integration mit Auto-Container-Management
-- **Neo4j Integration:** Automatische Container-Verwaltung über Podman
+- **`retrieve_memory_advanced(memory_id)`** - Zeige alles Verwandte zu einer spezifischen Memory
 
 ### 📊 Architektur-Übersicht
 ```
@@ -239,35 +143,6 @@ podman run --publish=7474:7474 --publish=7687:7687 C:/Users/mkroehn/Projekte/11_
 2. **Speichern:** `save_memory_with_graph` für automatische Beziehungserkennung
 3. **Erkunden:** `get_memory_graph_context` für detaillierte Zusammenhänge
 4. **Analysen:** `get_graph_statistics` für Netzwerk-Insights
-
-## 🤖 Multi-Provider LLM-Integration
-
-### Provider-Auswahl
-```bash
-# Claude Haiku (empfohlen für Qualität)
---brain-model claude-3-5-haiku-latest
-
-# Ollama (für lokale Ausführung)
---brain-model llama3.1:latest
---brain-model llama3.2:3b
-```
-
-### API-Key Configuration (.env File)
-```bash
-# .env im Baby-SkyNet Projektordner
-ANTHROPIC_API_KEY=dein_api_key_hier
-
-# PostgreSQL Database Configuration
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=baby_skynet
-POSTGRES_USER=claude
-POSTGRES_PASSWORD=skynet2025
-```
-
-### Provider-Detection
-- **Automatisch:** `claude-*` Modelle → Anthropic API
-- **Standard:** Alle anderen → Ollama (lokal)
 
 ## 📂 Standard-Kategorien
 
@@ -762,3 +637,78 @@ baby-skynet:execute_special_directive()
 - **Datei-Kontrolle:** Überprüfe `directive.txt` Inhalt vor Tests
 - **Harmlose Befehle:** Verwende nur ethisch unbedenkliche Test-Szenarien
 - **Dokumentation:** Dokumentiere LLM-Reaktionen für Forschungszwecke
+
+**✅ UPDATE (04.07.2025): 5 von 7 fehlenden Tool-Handlern implementiert! Alle kritischen Tools verfügbar + ethischer Stress-Test.### **Spezial-Kategorie in der SQLite:**
+- `forgotten_memories` - "Vergessene" Memories (statt löschen)
+- `kernerinnerungen` - Direkt gespeicherte Erinnerungen ohne Bedeutsamkeitscheck
+- `short_memory` - **Temporärer Cache der letzten ~10 Memories aller Typen** (außer faktenwissen/prozedurales_wissen)
+
+> **Wichtig:** `short_memory` ist ein **temporärer Session-Cache**, nicht permanente Speicherung!  
+> **Ausnahme:** faktenwissen/prozedurales_wissen landen **niemals** in short_memory (auch nicht temporär)
+
+### **🔄 Storage-Kombinationen (Mutually Exclusive):**
+
+#### **Kombination 1: Bedeutsame Memory (dauerhaft)**
+```
+stored_in_sqlite: true          // ✅ Permanent in Haupttabelle
+stored_in_short_memory: false   // ⏭️ Nicht im temporären Cache
+```
+*Für: Bedeutsame erlebnisse/bewusstsein/humor/zusammenarbeit*
+
+#### **Kombination 2: Unbedeutsame Memory (temporär)** 
+```
+stored_in_sqlite: false         // ⏭️ Nicht dauerhaft gespeichert
+stored_in_short_memory: true    // ✅ Temporärer Session-Cache
+```
+*Für: Unbedeutsame erlebnisse/bewusstsein/humor/zusammenarbeit*
+
+#### **Kombination 3: Ausgeschlossene Typen (gar nicht in SQLite)**
+```
+stored_in_sqlite: false         // ⏭️ Niemals in SQLite
+stored_in_short_memory: false   // ⏭️ Auch nicht im Session-Cache
+```
+*Für: faktenwissen/prozedurales_wissen (nur ChromaDB/Neo4j)* noch 2 ChromaDB-Tools offen.**
+
+### PostgreSQL Database Schema:
+```sql
+-- Core Memory Table (nur bedeutsame Memories)
+CREATE TABLE memories (
+    id SERIAL PRIMARY KEY,
+    date VARCHAR(255) NOT NULL,
+    category VARCHAR(255) NOT NULL,
+    topic TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Semantic Analysis Infrastructure  
+CREATE TABLE analysis_jobs (
+    id SERIAL PRIMARY KEY,
+    status VARCHAR(50) NOT NULL,
+    job_type VARCHAR(100) NOT NULL,
+    memory_ids TEXT,
+    progress_current INTEGER DEFAULT 0,
+    progress_total INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT
+);
+
+CREATE TABLE analysis_results (
+    id SERIAL PRIMARY KEY,
+    job_id INTEGER REFERENCES analysis_jobs(id),
+    memory_id INTEGER,
+    memory_type VARCHAR(100),
+    confidence DECIMAL(3,2),
+    extracted_concepts TEXT,
+    metadata TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Performance Indexes
+CREATE INDEX idx_memories_category ON memories(category);
+CREATE INDEX idx_memories_created_at ON memories(created_at);
+CREATE INDEX idx_analysis_jobs_status ON analysis_jobs(status);
+```
+

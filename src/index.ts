@@ -415,12 +415,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'search_memories_intelligent',
-        description: 'Intelligente adaptive Suche - wechselt automatisch zu ChromaDB-only wenn SQL Database leer ist',
+        description: 'Intelligente adaptive Suche mit optionalem Reranking - wechselt automatisch zu ChromaDB-only wenn SQL Database leer ist',
         inputSchema: {
           type: 'object',
           properties: {
             query: { type: 'string', description: 'Suchbegriff' },
             categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+            enableReranking: { type: 'boolean', description: 'Optional: Aktiviert Reranking für bessere Relevanz (default: false)' },
+            rerankStrategy: { type: 'string', enum: ['hybrid', 'llm', 'text'], description: 'Optional: Reranking-Strategie (default: hybrid)' },
           },
           required: ['query'],
         },
@@ -614,7 +616,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Just check container status without starting
         const containerManager = new ContainerManager();
         
-        if (await containerManager.isContainerEngineAvailable()) {
+        // Check if container engine is available
+        const engineAvailable = await containerManager.isContainerEngineAvailable();
+        
+        if (engineAvailable) {
           const containers = await containerManager.getMultipleContainerStatus([
             'baby-skynet-chromadb',
             'baby-skynet-neo4j'
@@ -632,7 +637,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             containerStatus += '\n💡 **Tip:** Use `memory_status` with autostart=true to automatically start containers\n';
           }
         } else {
-          containerStatus = '\n🐳 **Container Status:** Podman not available\n';
+          // Check if it's a podman machine issue
+          const podmanMachineRunning = await containerManager.isPodmanMachineRunning();
+          
+          if (!podmanMachineRunning && containerManager.getContainerEngine() === 'podman') {
+            containerStatus = '\n🐳 **Container Status:** Podman machine not running\n';
+            containerStatus += '💡 **Tip:** Use `memory_status` with autostart=true to automatically start Podman machine and containers\n';
+          } else {
+            containerStatus = '\n🐳 **Container Status:** Container engine not available\n';
+          }
         }
       }
       
@@ -1070,32 +1083,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const query = args?.query as string;
         const categories = args?.categories as string[];
+        const enableReranking = args?.enableReranking as boolean || false;
+        const rerankStrategy = (args?.rerankStrategy as 'hybrid' | 'llm' | 'text') || 'hybrid';
         if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchMemoriesIntelligent(query, categories);
+        const result = await memoryDb.searchMemoriesIntelligent(query, categories, enableReranking, rerankStrategy);
         if (!result.success) {
           return { content: [{ type: 'text', text: `❌ Intelligente Suche fehlgeschlagen: ${result.error}` }] };
         }
         
         const strategyIcon = result.search_strategy === 'hybrid' ? '🔄' : '🧠';
+        const rerankIcon = enableReranking ? ' ⚡' : '';
         const totalResults = result.combined_results.length;
+        const resultsToShow = enableReranking && result.reranked_results ? result.reranked_results : result.combined_results;
         
         if (totalResults === 0) {
-          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Strategie: ${strategyIcon} ${result.search_strategy}` }] };
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Strategie: ${strategyIcon} ${result.search_strategy}${rerankIcon}${enableReranking ? ` (${result.rerank_strategy})` : ''}` }] };
         }
         
-        const memoryText = result.combined_results.slice(0, 15).map((memory: any) => {
+        const memoryText = resultsToShow.slice(0, 15).map((memory: any) => {
           const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🔗';
           const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
+          const rerankScore = enableReranking && memory.rerank_score ? ` ⚡${(memory.rerank_score * 100).toFixed(0)}%` : '';
           const isReconstruction = memory.is_concept_reconstruction ? ' [Rekonstruiert]' : '';
-          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category} | 🏷️ ${memory.topic}${relevanceScore}${isReconstruction}\n${memory.content}\n`;
+          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category} | 🏷️ ${memory.topic}${relevanceScore}${rerankScore}${isReconstruction}\n${memory.content}\n`;
         }).join('\n---\n\n');
         
         const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+        const rerankInfo = enableReranking ? `\n⚡ Reranking: ${result.rerank_strategy}` : '';
         return { 
           content: [{ 
             type: 'text', 
-            text: `🤖 Intelligente Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${strategyIcon} ${result.search_strategy}\n📈 Ergebnisse: ${totalResults} gefunden\n\n🎯 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
+            text: `🤖 Intelligente Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${strategyIcon} ${result.search_strategy}${rerankInfo}\n📈 Ergebnisse: ${totalResults} gefunden\n\n🎯 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
           }] 
         };
       } catch (error) {

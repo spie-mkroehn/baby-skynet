@@ -1241,18 +1241,22 @@ export class SQLiteDatabase {
    * Intelligent search that adapts based on SQLite results
    * Falls back to ChromaDB-only search if SQLite returns no results
    */
-  async searchMemoriesIntelligent(query: string, categories?: string[]): Promise<{
+  async searchMemoriesIntelligent(query: string, categories?: string[], enableReranking: boolean = false, rerankStrategy: 'hybrid' | 'llm' | 'text' = 'hybrid'): Promise<{
     success: boolean;
     sqlite_results: any[];
     chroma_results: any[];
     combined_results: any[];
+    reranked_results?: any[];
     search_strategy: 'hybrid' | 'chroma_only';
+    rerank_strategy?: string;
     error?: string;
   }> {
     Logger.separator('Intelligent Memory Search');
     Logger.info('Starting intelligent search', { 
       query: query.substring(0, 100), 
-      categories 
+      categories,
+      enableReranking,
+      rerankStrategy: enableReranking ? rerankStrategy : 'none'
     });
     
     try {
@@ -1267,16 +1271,37 @@ export class SQLiteDatabase {
         };
       }
 
-      // If SQLite has results, return the hybrid results
+      // If SQLite has results, return the hybrid results (with optional reranking)
       if (advancedResult.sqlite_results.length > 0) {
         Logger.success('Hybrid search completed (SQLite + ChromaDB)', {
           sqliteResults: advancedResult.sqlite_results.length,
           chromaResults: advancedResult.chroma_results.length,
-          combinedResults: advancedResult.combined_results.length
+          combinedResults: advancedResult.combined_results.length,
+          willRerank: enableReranking
         });
+
+        let finalResults = advancedResult.combined_results;
+        let rerankedResults: any[] | undefined;
+        let usedRerankStrategy: string | undefined;
+
+        // Apply reranking if enabled
+        if (enableReranking) {
+          Logger.info('Applying reranking to hybrid results...', { strategy: rerankStrategy });
+          rerankedResults = await this.rerankResults(query, advancedResult.combined_results, rerankStrategy);
+          finalResults = rerankedResults;
+          usedRerankStrategy = rerankStrategy;
+          Logger.success('Reranking completed', { 
+            originalCount: advancedResult.combined_results.length,
+            rerankedCount: rerankedResults.length
+          });
+        }
+
         return {
           ...advancedResult,
-          search_strategy: 'hybrid'
+          combined_results: finalResults,
+          reranked_results: rerankedResults,
+          search_strategy: 'hybrid',
+          rerank_strategy: usedRerankStrategy
         };
       }
 
@@ -1297,19 +1322,40 @@ export class SQLiteDatabase {
           )
         ];
 
+        let finalChromaResults = enhancedChromaResults
+          .sort((a: any, b: any) => (b.relevance_score || 0) - (a.relevance_score || 0))
+          .slice(0, 50);
+
+        let rerankedResults: any[] | undefined;
+        let usedRerankStrategy: string | undefined;
+
+        // Apply reranking if enabled for ChromaDB-only results
+        if (enableReranking) {
+          Logger.info('Applying reranking to ChromaDB-only results...', { strategy: rerankStrategy });
+          rerankedResults = await this.rerankResults(query, finalChromaResults, rerankStrategy);
+          finalChromaResults = rerankedResults;
+          usedRerankStrategy = rerankStrategy;
+          Logger.success('ChromaDB-only reranking completed', { 
+            originalCount: enhancedChromaResults.length,
+            rerankedCount: rerankedResults.length
+          });
+        }
+
         Logger.success('ChromaDB-only search completed', {
           totalChromaResults: enhancedChromaResults.length,
-          strategy: 'chroma_only'
+          finalResultsCount: finalChromaResults.length,
+          strategy: 'chroma_only',
+          reranked: enableReranking
         });
 
         return {
           success: true,
           sqlite_results: [],
           chroma_results: enhancedChromaResults,
-          combined_results: enhancedChromaResults
-            .sort((a: any, b: any) => (b.relevance_score || 0) - (a.relevance_score || 0))
-            .slice(0, 50),
-          search_strategy: 'chroma_only'
+          combined_results: finalChromaResults,
+          reranked_results: rerankedResults,
+          search_strategy: 'chroma_only',
+          rerank_strategy: usedRerankStrategy
         };
       }
 

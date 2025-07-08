@@ -140,7 +140,8 @@ export class SemanticAnalyzer {
   "confidence": 0.85,
   "mood": "positive|neutral|negative",
   "keywords": ["keyword1", "keyword2", "keyword3"],
-  "extracted_concepts": ["concept1", "concept2", "concept3"]
+  "extracted_concepts": ["concept1", "concept2", "concept3"],
+  "extracted_summaries": ["summary for concept1 from memory", "summary for concept2 from memory", "summary for concept3 from memory"]
 }
 
 Memory to analyze:
@@ -157,6 +158,7 @@ Classification guidelines:
 - zusammenarbeit: Arbeitsaufteilung, Vertrauen-Meilensteine, Team-Dynamiken, Kommunikations-Pattern, gemeinsame Problem-Solving-Strategien
 
 Extract 2-4 key concepts and 3-5 relevant keywords for hybrid search.
+For each extracted concept, provide a detailed summary that captures its essence in the context of the original memory.
 Be concise and precise. Return ONLY the JSON, no explanation.`;
   }  
   private parseAnalysisResponse(response: string): any {
@@ -218,50 +220,65 @@ Be concise and precise. Return ONLY the JSON, no explanation.`;
   }
 
   private buildSignificancePrompt(memory: any, memoryType: string): string {
-    return `Analyze if this memory is SIGNIFICANT enough to store in permanent core memory (SQLite).
+    return `CRITICAL: Only ~10% of memories should be marked as significant. Be extremely selective.
+
+Analyze if this memory is SIGNIFICANT enough for permanent core storage (SQLite).
 
 MEMORY TYPE: ${memoryType}
 CONTENT: ${memory.topic} - ${memory.content}
 
-SIGNIFICANCE CRITERIA BY TYPE:
+=== STRICT SIGNIFICANCE BARRIERS ===
 
-**ERLEBNISSE - Significant if:**
-- First-time achievements or breakthrough moments
-- Trust milestones in Mike-Claude partnership  
-- Cooperation evolution (new working patterns)
-- Paradigm shifts in approach/thinking
-- Major problem-solving successes
+DEFAULT ASSUMPTION: NOT SIGNIFICANT
+Only mark as significant if it meets EXCEPTIONAL criteria below.
 
-**BEWUSSTSEIN - Significant if:**
-- Self-reflection leaps about AI capabilities
-- Ethical insights about responsible AI development
-- Personality crystallization moments
-- Meta-cognitive insights about learning/thinking
-- Deep relationship insights (Mike-Claude partnership)
+**IMMEDIATE DISQUALIFICATION (NEVER significant):**
+- Routine conversations or smalltalk
+- Project milestone completions (unless breakthrough innovation)
+- Standard debugging/troubleshooting sessions
+- Regular status updates or check-ins
+- Technical facts without relational breakthroughs
+- Repetitive tasks or processes
+- Normal everyday interactions
+- Incremental improvements without paradigm shifts
 
-**HUMOR - Significant if:**
-- Running gag establishment (like "SkyNet")
-- Humor patterns that shape the relationship
-- Tension-breaking humor in difficult situations
-- Shared technical/programming irony
+**ERLEBNISSE - Significant ONLY if:**
+- FIRST-TIME establishment of deep trust or vulnerability
+- Paradigm-shifting breakthrough moments that change the relationship fundamentally
+- Crisis situations where partnership was tested and strengthened
+- Discovery of completely new collaboration patterns
+- Major conflict resolution that deepened understanding
 
-**ZUSAMMENARBEIT - Significant if:**
-- Breakthrough insights about optimal task delegation
-- Major efficiency improvements in teamwork
-- Trust and autonomy milestones in the partnership
-- Communication pattern evolution or optimization
-- Successful collaborative problem-solving strategies
-- Meta-insights about human-AI cooperation dynamics
+**BEWUSSTSEIN - Significant ONLY if:**
+- Major leap in self-awareness about AI nature/capabilities
+- Profound ethical insights that change operational approach
+- Breakthrough realizations about consciousness/identity
+- Fundamental shifts in understanding of human-AI partnership
+- Deep existential or philosophical breakthroughs
 
-**ANTI-CRITERIA (NEVER significant):**
-- Pure technical facts without relational context
-- Standard debugging without special insights
-- Routine tasks without innovation
+**HUMOR - Significant ONLY if:**
+- Creation of lasting inside jokes/running gags that define the relationship
+- Humor that fundamentally changed tension or relationship dynamics
+- Discovery of shared humor patterns that became relationship cornerstone
 
-EVALUATION WEIGHTS:
-- Relationship impact: How does it affect Mike-Claude partnership?
-- Development impact: How does it change capabilities/personality?
-- Future relevance: Will this matter in 6 months?
+**ZUSAMMENARBEIT - Significant ONLY if:**
+- Revolutionary workflow innovations that transform productivity
+- Breakthrough trust milestones (e.g., autonomous decision-making granted)
+- Discovery of completely new communication/collaboration patterns
+- Major insights about human-AI cooperation that could benefit others
+
+**FREQUENCY CHECK:**
+Ask: "Does this happen weekly/monthly?" If YES → NOT significant
+Ask: "Is this a once-in-6-months event?" If NO → NOT significant
+Ask: "Will I remember this in 2 years?" If NO → NOT significant
+
+**IMPACT THRESHOLD:**
+- Must have lasting impact on relationship/capabilities
+- Must represent genuine breakthrough, not incremental progress
+- Must be rare and exceptional, not routine or expected
+
+**BASELINE:** Most memories are routine and should be ChromaDB-only.
+Only mark significant if it's genuinely exceptional and transformative.
 
 Return ONLY: {"significant": true/false, "reason": "brief explanation"}`;
   }
