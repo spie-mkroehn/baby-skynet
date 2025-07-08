@@ -8,6 +8,7 @@
 import { Pool, PoolClient } from 'pg';
 import { MemoryPipelineBase, AdvancedMemoryResult } from './MemoryPipelineBase.js';
 import { Logger } from '../utils/Logger.js';
+import { PostgreSQLPoolManager } from './PostgreSQLPoolManager.js';
 
 export interface PostgreSQLConfig {
   host: string;
@@ -36,7 +37,9 @@ export class PostgreSQLDatabaseRefactored extends MemoryPipelineBase {
     });
     
     this.config = config;
-    this.pool = new Pool({
+    
+    // Use singleton pool manager
+    this.pool = PostgreSQLPoolManager.getPool({
       host: config.host,
       port: config.port,
       database: config.database,
@@ -119,6 +122,35 @@ export class PostgreSQLDatabaseRefactored extends MemoryPipelineBase {
     }
   }
 
+  // Helper method to ensure we have a valid pool connection
+  private ensureValidPool(): void {
+    // Check if the current pool is ended/closed
+    if (this.pool.ended) {
+      Logger.debug('PostgreSQL pool was closed, requesting new pool from manager');
+      
+      // Get a fresh pool from the manager
+      this.pool = PostgreSQLPoolManager.getPool({
+        host: this.config.host,
+        port: this.config.port,
+        database: this.config.database,
+        user: this.config.user,
+        password: this.config.password,
+        max: this.config.max || 20,
+        idleTimeoutMillis: this.config.idleTimeoutMillis || 30000,
+        connectionTimeoutMillis: this.config.connectionTimeoutMillis || 2000,
+        ssl: this.config.ssl || false
+      });
+      
+      Logger.debug('New PostgreSQL pool obtained from manager');
+    }
+  }
+
+  // Safe pool connection method that handles closed pools
+  private async getPoolConnection(): Promise<any> {
+    this.ensureValidPool();
+    return await this.pool.connect();
+  }
+
   // Implementation of abstract methods from MemoryPipelineBase
 
   async saveNewMemory(category: string, topic: string, content: string): Promise<any> {
@@ -132,7 +164,7 @@ export class PostgreSQLDatabaseRefactored extends MemoryPipelineBase {
       RETURNING id
     `;
     
-    const client = await this.pool.connect();
+    const client = await this.getPoolConnection();
     try {
       const result = await client.query(query, [
         category, 
@@ -573,13 +605,13 @@ export class PostgreSQLDatabaseRefactored extends MemoryPipelineBase {
 
   // Connection management
   async close(): Promise<void> {
-    Logger.info('Closing PostgreSQL connection pool');
+    Logger.info('Releasing PostgreSQL connection pool reference');
     
     try {
-      await this.pool.end();
-      Logger.success('PostgreSQL connection pool closed successfully');
+      await PostgreSQLPoolManager.releasePool();
+      Logger.success('PostgreSQL connection pool reference released successfully');
     } catch (error) {
-      Logger.error('Error closing PostgreSQL connection pool', { error });
+      Logger.error('Error releasing PostgreSQL connection pool reference', { error });
       throw error;
     }
   }

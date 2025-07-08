@@ -8,7 +8,13 @@
     "build": "tsc",
     "start": "node build/index.js",
     "dev": "tsc && node build/index.js",
-    "test:postgres": "tsc && node test-postgres.js",
+    "test": "tsc && node tests/master-test-runner.js",
+    "test:core": "tsc && node tests/core-system-tests.js",
+    "test:db": "tsc && node tests/database-integration-tests.js",
+    "test:search": "tsc && node tests/search-pipeline-tests.js",
+    "test:memory": "tsc && node tests/memory-pipeline-tests.js",
+    "test:infra": "tsc && node tests/infrastructure-tests.js",
+    "test:factory": "tsc && node tests/factory-tests.js",
     "setup:postgres": "powershell -ExecutionPolicy Bypass -File setup-postgres.ps1"
   },
   "dependencies": {
