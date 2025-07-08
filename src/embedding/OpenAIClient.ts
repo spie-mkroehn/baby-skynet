@@ -98,7 +98,7 @@ export class OpenAIEmbeddingClient implements EmbeddingProvider {
         const dimensions = this.model === 'text-embedding-3-large' ? 3072 : 1536;
         
         return {
-            provider: 'OpenAI',
+            provider: 'openai',
             model: this.model,
             dimensions: dimensions
         };

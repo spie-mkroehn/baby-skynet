@@ -273,13 +273,66 @@ class FactoryTests {
       throw new Error('Failed to create OpenAI embedding client');
     }
     
-    // Test required methods exist
-    const requiredMethods = ['generate', 'testConnection'];
+    // Test Ollama embedding client creation
+    const ollamaClient = EmbeddingFactory.create({
+      provider: 'ollama',
+      model: 'nomic-embed-text:latest'
+    });
+    
+    if (!ollamaClient) {
+      throw new Error('Failed to create Ollama embedding client');
+    }
+    
+    // Test required methods exist on both clients
+    const requiredMethods = ['generate', 'testConnection', 'getModelInfo'];
     
     for (const method of requiredMethods) {
       if (typeof openaiClient[method] !== 'function') {
-        throw new Error(`Embedding client missing method: ${method}`);
+        throw new Error(`OpenAI embedding client missing method: ${method}`);
       }
+      if (typeof ollamaClient[method] !== 'function') {
+        throw new Error(`Ollama embedding client missing method: ${method}`);
+      }
+    }
+    
+    // Test model info retrieval
+    const openaiInfo = openaiClient.getModelInfo();
+    const ollamaInfo = ollamaClient.getModelInfo();
+    
+    if (openaiInfo.provider !== 'openai') {
+      throw new Error(`Expected OpenAI provider, got ${openaiInfo.provider}`);
+    }
+    
+    if (ollamaInfo.provider !== 'ollama') {
+      throw new Error(`Expected Ollama provider, got ${ollamaInfo.provider}`);
+    }
+    
+    // Test intelligent provider detection from environment
+    const originalEmbeddingModel = process.env.EMBEDDING_MODEL;
+    
+    // Test OpenAI detection
+    process.env.EMBEDDING_MODEL = 'openai';
+    const autoOpenAI = EmbeddingFactory.createFromEnv();
+    const autoOpenAIInfo = autoOpenAI.getModelInfo();
+    
+    if (autoOpenAIInfo.provider !== 'openai') {
+      throw new Error(`Auto-detection failed for OpenAI: got ${autoOpenAIInfo.provider}`);
+    }
+    
+    // Test Ollama detection
+    process.env.EMBEDDING_MODEL = 'nomic-embed-text:latest';
+    const autoOllama = EmbeddingFactory.createFromEnv();
+    const autoOllamaInfo = autoOllama.getModelInfo();
+    
+    if (autoOllamaInfo.provider !== 'ollama') {
+      throw new Error(`Auto-detection failed for Ollama: got ${autoOllamaInfo.provider}`);
+    }
+    
+    // Restore original environment
+    if (originalEmbeddingModel !== undefined) {
+      process.env.EMBEDDING_MODEL = originalEmbeddingModel;
+    } else {
+      delete process.env.EMBEDDING_MODEL;
     }
     
     // Test error handling
@@ -296,6 +349,8 @@ class FactoryTests {
     }
     
     logTest('Embedding Factory: Client creation works correctly');
+    logTest('Embedding Factory: Ollama integration successful');
+    logTest('Embedding Factory: Intelligent provider detection working');
   }
 
   async testFactoryIntegration() {

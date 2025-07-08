@@ -122,7 +122,7 @@ Spezielle Projekte: search_memories_with_graph für Discovery
 - **`search_memories_with_reranking(query, categories?, rerank_strategy?)`** - Erweiterte Relevanz-Optimierung
 - **`retrieve_memory_advanced(memory_id)`** - Zeige alles Verwandte zu einer spezifischen Memory
 
-### 📊 Architektur-Übersicht
+### 📊 Skynet Home Edition MCP Server: Architektur-Übersicht
 ```
 ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
 │ PostgreSQL  │    │ ChromaDB     │    │ Neo4j       │
@@ -132,10 +132,10 @@ Spezielle Projekte: search_memories_with_graph für Discovery
        │                   │                   │
        └───────────────────┼───────────────────┘
                            │
-                ┌─────────────────────┐
-                │ Unified Memory      │
-                │ Management Pipeline │
-                └─────────────────────┘
+               ┌───────────────────────┐
+               │ Unified Memory Logic  │
+               │ & Management Pipeline │
+               └───────────────────────┘
 ```
 
 ### 🎯 Empfohlener Workflow

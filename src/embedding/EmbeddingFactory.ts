@@ -1,5 +1,6 @@
 import { EmbeddingProvider, EmbeddingConfig } from './types.js';
 import { OpenAIEmbeddingClient } from './OpenAIClient.js';
+import { OllamaEmbeddingClient } from './OllamaClient.js';
 import { Logger } from '../utils/Logger.js';
 
 /**
@@ -29,8 +30,11 @@ export class EmbeddingFactory {
                 return new OpenAIEmbeddingClient(config.apiKey, config.model);
 
             case 'ollama':
-                Logger.error('Embedding provider creation failed - Ollama not implemented', { provider: 'ollama' });
-                throw new Error('Ollama embedding provider not yet implemented');
+                Logger.success('Ollama embedding provider created', { 
+                    model: config.model || 'nomic-embed-text:latest',
+                    baseUrl: config.baseUrl || 'http://localhost:11434'
+                });
+                return new OllamaEmbeddingClient(config.model, config.baseUrl);
 
             default:
                 Logger.error('Embedding provider creation failed - unsupported provider', { provider: config.provider });
@@ -40,6 +44,9 @@ export class EmbeddingFactory {
 
     /**
      * Create provider from environment variables and command line args
+     * Implements intelligent provider detection based on EMBEDDING_MODEL:
+     * - "openai" → OpenAI provider
+     * - Any other value (e.g., "nomic-embed-text:latest") → Ollama provider
      * @param args - Command line arguments
      * @returns EmbeddingProvider instance
      */
@@ -47,24 +54,33 @@ export class EmbeddingFactory {
         Logger.info('Creating embedding provider from environment', { argsCount: args.length });
         
         // Parse command line arguments safely
-        const embeddingProvider = args
-            .find(arg => arg && arg.startsWith('--embedding-provider='))
-            ?.split('=')[1] || process.env.EMBEDDING_PROVIDER || 'openai';
-        
         const embeddingModel = args
             .find(arg => arg && arg.startsWith('--embedding-model='))
-            ?.split('=')[1] || process.env.EMBEDDING_MODEL;
+            ?.split('=')[1] || process.env.EMBEDDING_MODEL || 'openai';
+
+        // Intelligent provider detection based on model name
+        let provider: 'openai' | 'ollama';
+        let model: string | undefined;
+        
+        if (embeddingModel === 'openai') {
+            provider = 'openai';
+            model = 'text-embedding-3-small'; // Default OpenAI model
+        } else {
+            provider = 'ollama';
+            model = embeddingModel; // Use the full model name for Ollama
+        }
 
         const config: EmbeddingConfig = {
-            provider: embeddingProvider as 'openai' | 'ollama',
-            model: embeddingModel,
+            provider,
+            model,
             apiKey: process.env.OPENAI_API_KEY,
             baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434'
         };
 
-        Logger.debug('Environment-based embedding config parsed', { 
-            provider: config.provider,
-            model: config.model || 'default',
+        Logger.info('Intelligent embedding provider detection completed', { 
+            embeddingModel,
+            detectedProvider: provider,
+            finalModel: model,
             hasApiKey: !!config.apiKey,
             baseUrl: config.baseUrl
         });
