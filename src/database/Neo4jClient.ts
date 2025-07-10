@@ -884,4 +884,102 @@ export class Neo4jClient {
       };
     }
   }
+
+  /**
+   * Get graph database statistics
+   */
+  async getGraphStatistics(): Promise<any> {
+    const session = this.driver.session({ database: this.database });
+    
+    try {
+      // Get node counts by label
+      const nodeCountQuery = `
+        CALL db.labels() YIELD label
+        CALL apoc.cypher.run('MATCH (n:' + label + ') RETURN count(n) as count', {}) YIELD value
+        RETURN label, value.count as count
+      `;
+      
+      // Get relationship counts by type
+      const relCountQuery = `
+        CALL db.relationshipTypes() YIELD relationshipType
+        CALL apoc.cypher.run('MATCH ()-[r:' + relationshipType + ']->() RETURN count(r) as count', {}) YIELD value
+        RETURN relationshipType, value.count as count
+      `;
+      
+      // Fallback queries if APOC is not available
+      const simpleNodeQuery = `MATCH (n) RETURN labels(n) as label, count(n) as count ORDER BY count DESC`;
+      const simpleRelQuery = `MATCH ()-[r]->() RETURN type(r) as relationshipType, count(r) as count ORDER BY count DESC`;
+      
+      let nodeStats, relStats;
+      
+      try {
+        // Try APOC queries first
+        const nodeResult = await session.run(nodeCountQuery);
+        const relResult = await session.run(relCountQuery);
+        
+        nodeStats = nodeResult.records.map(record => ({
+          label: record.get('label'),
+          count: record.get('count').toNumber()
+        }));
+        
+        relStats = relResult.records.map(record => ({
+          type: record.get('relationshipType'),
+          count: record.get('count').toNumber()
+        }));
+        
+      } catch (apocError) {
+        Logger.debug('APOC not available, using simple queries');
+        
+        // Fallback to simple queries
+        const nodeResult = await session.run(simpleNodeQuery);
+        const relResult = await session.run(simpleRelQuery);
+        
+        nodeStats = nodeResult.records.map(record => ({
+          label: record.get('label')[0] || 'Unknown',
+          count: record.get('count').toNumber()
+        }));
+        
+        relStats = relResult.records.map(record => ({
+          type: record.get('relationshipType'),
+          count: record.get('count').toNumber()
+        }));
+      }
+      
+      // Get total counts
+      const totalNodesResult = await session.run('MATCH (n) RETURN count(n) as total');
+      const totalRelsResult = await session.run('MATCH ()-[r]->() RETURN count(r) as total');
+      
+      const totalNodes = totalNodesResult.records[0].get('total').toNumber();
+      const totalRelationships = totalRelsResult.records[0].get('total').toNumber();
+      
+      Logger.success('Neo4j: Graph statistics retrieved', { 
+        totalNodes, 
+        totalRelationships,
+        nodeTypes: nodeStats.length,
+        relationshipTypes: relStats.length
+      });
+      
+      return {
+        totalNodes,
+        totalRelationships,
+        nodeStats,
+        relStats,
+        connected: true
+      };
+      
+    } catch (error) {
+      Logger.error('Neo4j: Failed to get graph statistics', { error: error.message });
+      
+      return {
+        totalNodes: 0,
+        totalRelationships: 0,
+        nodeStats: [],
+        relStats: [],
+        connected: false,
+        error: error.message
+      };
+    } finally {
+      await session.close();
+    }
+  }
 }

@@ -277,7 +277,7 @@ class InfrastructureTests {
         switch (service) {
           case 'chromadb':
             // Simple HTTP health check
-            const chromaResponse = await fetch(`http://localhost:8000/api/v1/heartbeat`, {
+            const chromaResponse = await fetch(`http://localhost:8000/api/v2/heartbeat`, {
               method: 'GET',
               timeout: 5000
             }).catch(() => null);

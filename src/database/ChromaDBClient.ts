@@ -10,7 +10,13 @@ export class ChromaDBClient {
   private embeddingProvider: EmbeddingProvider;
 
   constructor(serverUrl: string = 'http://localhost:8000', collectionName: string = 'claude-main') {
-    this.client = new ChromaClient({ path: serverUrl });
+    // Parse URL to extract host and port
+    const url = new URL(`${serverUrl}/api/v2`);
+    this.client = new ChromaClient({ 
+      host: url.hostname,
+      port: parseInt(url.port) || 8000,
+      ssl: url.protocol === 'https:'
+    });
     this.collectionName = collectionName;
     this.embeddingProvider = EmbeddingFactory.createFromEnv();
   }
