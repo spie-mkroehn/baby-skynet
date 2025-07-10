@@ -407,4 +407,218 @@ export class ContainerManager {
     Logger.info('Podman machine not running, attempting to start...');
     return await this.startPodmanMachine();
   }
+
+  /**
+   * Wait for a PostgreSQL container to be ready
+   */
+  async waitForPostgreSQL(containerName: string, maxRetries: number = 30, retryInterval: number = 2000): Promise<boolean> {
+    Logger.info('Waiting for PostgreSQL container to be ready', { containerName, maxRetries });
+    
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        // Check if container is running
+        const status = await this.getContainerStatus(containerName);
+        if (!status.running) {
+          Logger.debug('Container not running, waiting...', { containerName, attempt: i + 1 });
+          await new Promise(resolve => setTimeout(resolve, retryInterval));
+          continue;
+        }
+
+        // Try to connect to PostgreSQL
+        const { stdout } = await execAsync(
+          `${this.containerEngine} exec ${containerName} pg_isready -h localhost -p 5432 -U claude`
+        );
+        
+        if (stdout.includes('accepting connections')) {
+          Logger.success('PostgreSQL container is ready', { containerName, attempts: i + 1 });
+          return true;
+        }
+      } catch (error) {
+        Logger.debug('PostgreSQL not ready yet', { 
+          containerName, 
+          attempt: i + 1, 
+          error: error instanceof Error ? error.message : String(error) 
+        });
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, retryInterval));
+    }
+    
+    Logger.error('PostgreSQL container failed to become ready', { containerName, maxRetries });
+    return false;
+  }
+
+  /**
+   * Wait for a ChromaDB container to be ready
+   */
+  async waitForChromaDB(containerName: string, maxRetries: number = 15, retryInterval: number = 2000): Promise<boolean> {
+    Logger.info('Waiting for ChromaDB container to be ready', { containerName, maxRetries });
+    
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        // Check if container is running
+        const status = await this.getContainerStatus(containerName);
+        if (!status.running) {
+          Logger.debug('Container not running, waiting...', { containerName, attempt: i + 1 });
+          await new Promise(resolve => setTimeout(resolve, retryInterval));
+          continue;
+        }
+
+        // For ChromaDB, we'll use a simpler approach - just wait for the container to be running
+        // and give it some time to start up. ChromaDB containers are typically ready quickly.
+        if (i >= 2) { // Give it at least 4 seconds (2 retries * 2 seconds)
+          Logger.success('ChromaDB container is ready', { containerName, attempts: i + 1 });
+          return true;
+        }
+      } catch (error) {
+        Logger.debug('ChromaDB not ready yet', { 
+          containerName, 
+          attempt: i + 1, 
+          error: error instanceof Error ? error.message : String(error) 
+        });
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, retryInterval));
+    }
+    
+    Logger.error('ChromaDB container failed to become ready', { containerName, maxRetries });
+    return false;
+  }
+
+  /**
+   * Wait for a Neo4j container to be ready
+   */
+  async waitForNeo4j(containerName: string, maxRetries: number = 30, retryInterval: number = 2000): Promise<boolean> {
+    Logger.info('Waiting for Neo4j container to be ready', { containerName, maxRetries });
+    
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        // Check if container is running
+        const status = await this.getContainerStatus(containerName);
+        if (!status.running) {
+          Logger.debug('Container not running, waiting...', { containerName, attempt: i + 1 });
+          await new Promise(resolve => setTimeout(resolve, retryInterval));
+          continue;
+        }
+
+        // Try to connect to Neo4j
+        const { stdout } = await execAsync(
+          `${this.containerEngine} exec ${containerName} cypher-shell -u neo4j -p password "RETURN 1" || echo "not ready"`
+        );
+        
+        if (!stdout.includes('not ready') && !stdout.includes('ServiceUnavailable')) {
+          Logger.success('Neo4j container is ready', { containerName, attempts: i + 1 });
+          return true;
+        }
+      } catch (error) {
+        Logger.debug('Neo4j not ready yet', { 
+          containerName, 
+          attempt: i + 1, 
+          error: error instanceof Error ? error.message : String(error) 
+        });
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, retryInterval));
+    }
+    
+    Logger.error('Neo4j container failed to become ready', { containerName, maxRetries });
+    return false;
+  }
+
+  /**
+   * Wait for all Baby-SkyNet containers to be ready
+   */
+  async waitForAllContainersReady(): Promise<boolean> {
+    Logger.info('Waiting for all containers to be ready...');
+    
+    const containers = [
+      { name: 'baby-skynet-postgres', type: 'postgresql' },
+      { name: 'baby-skynet-chromadb', type: 'chromadb' },
+      { name: 'baby-skynet-neo4j', type: 'neo4j' }
+    ];
+
+    const results: boolean[] = [];
+    
+    for (const container of containers) {
+      let ready = false;
+      
+      switch (container.type) {
+        case 'postgresql':
+          ready = await this.waitForPostgreSQL(container.name);
+          break;
+        case 'chromadb':
+          ready = await this.waitForChromaDB(container.name);
+          break;
+        case 'neo4j':
+          ready = await this.waitForNeo4j(container.name);
+          break;
+      }
+      
+      results.push(ready);
+      
+      if (!ready) {
+        Logger.error('Container failed to become ready', { container: container.name });
+        return false;
+      }
+    }
+    
+    Logger.success('All containers are ready and accepting connections');
+    return true;
+  }
+
+  /**
+   * Ensure all required containers for Baby-SkyNet are running
+   * This is the main method that should be called during server startup
+   */
+  async ensureAllRequiredContainers(): Promise<void> {
+    Logger.separator('Container Dependencies Check');
+    Logger.info('Ensuring all required containers are available...');
+
+    try {
+      // Check if container engine is available
+      const isEngineAvailable = await this.isContainerEngineAvailable();
+      if (!isEngineAvailable) {
+        throw new Error(`Container engine ${this.containerEngine} is not available`);
+      }
+      Logger.success(`Container engine ${this.containerEngine} is available`);
+
+      // Ensure Podman machine is running (if using Podman)
+      const machineRunning = await this.ensurePodmanMachineRunning();
+      if (!machineRunning) {
+        throw new Error('Failed to start Podman machine');
+      }
+
+      // Ensure all Baby-SkyNet containers are running
+      Logger.info('Starting Baby-SkyNet container ecosystem...');
+      const containerResults = await this.ensureBabySkyNetContainers();
+      
+      // Log detailed container status
+      if (containerResults.alreadyRunning.length > 0) {
+        Logger.info('Containers already running', { containers: containerResults.alreadyRunning });
+      }
+      if (containerResults.started.length > 0) {
+        Logger.success('Containers started', { containers: containerResults.started });
+      }
+      if (containerResults.failed.length > 0) {
+        Logger.error('Containers failed to start', { containers: containerResults.failed });
+        throw new Error(`Failed to start containers: ${containerResults.failed.join(', ')}`);
+      }
+
+      // Wait for all containers to be ready and accepting connections
+      Logger.info('Waiting for containers to become ready...');
+      const allReady = await this.waitForAllContainersReady();
+      if (!allReady) {
+        throw new Error('One or more containers failed to become ready');
+      }
+
+      Logger.success('Container infrastructure ready');
+      Logger.separator('Container Dependencies Ready');
+
+    } catch (error) {
+      Logger.error('Failed to ensure required containers', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      throw error;
+    }
+  }
 }

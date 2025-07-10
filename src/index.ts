@@ -621,25 +621,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const containerManager = new ContainerManager();
         
         try {
-          const containerResults = await containerManager.ensureBabySkyNetContainers();
-          
-          if (containerResults.alreadyRunning.length > 0) {
-            containerActions += `✅ Already running: ${containerResults.alreadyRunning.join(', ')}\n`;
-          }
-          
-          if (containerResults.started.length > 0) {
-            containerActions += `🚀 Started: ${containerResults.started.join(', ')}\n`;
-          }
-          
-          if (containerResults.failed.length > 0) {
-            containerActions += `❌ Failed to start: ${containerResults.failed.join(', ')}\n`;
-          }
+          // Use the central container management method
+          await containerManager.ensureAllRequiredContainers();
+          containerActions += `✅ All required containers ensured (PostgreSQL, ChromaDB, Neo4j)\n`;
           
           // Wait a moment for containers to fully start
-          if (containerResults.started.length > 0) {
-            Logger.info('Waiting for containers to fully initialize...');
-            await new Promise(resolve => setTimeout(resolve, 5000));
-          }
+          Logger.info('Waiting for containers to fully initialize...');
+          await new Promise(resolve => setTimeout(resolve, 5000));
           
         } catch (error) {
           containerActions = `❌ Container management failed: ${error}\n`;
@@ -654,6 +642,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (engineAvailable) {
           const containers = await containerManager.getMultipleContainerStatus([
+            'baby-skynet-postgres',
             'baby-skynet-chromadb',
             'baby-skynet-neo4j'
           ]);
