@@ -2,6 +2,7 @@ import { DatabaseConfig, DatabaseConfigManager } from './DatabaseConfig.js';
 import { SQLiteDatabaseRefactored } from './SQLiteDatabaseRefactored.js';
 import { PostgreSQLDatabaseRefactored } from './PostgreSQLDatabaseRefactored.js';
 import { Logger } from '../utils/Logger.js';
+import { ContainerManager } from '../utils/ContainerManager.js';
 
 // Unified interface for both database types
 export interface IMemoryDatabase {
@@ -69,10 +70,44 @@ export class DatabaseFactory {
       Logger.info('Returning existing database instance');
       return this.instance;
     }
-    
+
     const config = DatabaseConfigManager.getDatabaseConfig();
     DatabaseConfigManager.validateConfig(config);
     DatabaseConfigManager.logConfig(config);
+    
+    // Try to ensure containers are running if using PostgreSQL
+    if (config.type === 'postgresql') {
+      Logger.info('PostgreSQL configuration detected - ensuring container infrastructure...');
+      
+      try {
+        await this.ensureRequiredContainers();
+        Logger.success('Container infrastructure ready');
+      } catch (containerError) {
+        Logger.warn('Container setup failed, falling back to SQLite', { 
+          error: containerError instanceof Error ? containerError.message : String(containerError),
+          recommendation: 'Start containers manually using memory_status tool or "podman machine start"'
+        });
+        
+        // Force fallback to SQLite
+        const fallbackConfig: DatabaseConfig = {
+          type: 'sqlite',
+          sqliteDbPath: process.env.SQLITE_DB_PATH || './claude_memory.db'
+        };
+        
+        Logger.info('Initializing SQLite database (container fallback)...', { path: fallbackConfig.sqliteDbPath });
+        try {
+          const sqliteDatabase = new SQLiteDatabaseRefactored(fallbackConfig.sqliteDbPath!);
+          this.instance = sqliteDatabase;
+          Logger.success('SQLite database initialized successfully (container fallback)');
+          return this.instance;
+        } catch (sqliteError) {
+          Logger.error('SQLite fallback also failed', { 
+            error: sqliteError instanceof Error ? sqliteError.message : String(sqliteError) 
+          });
+          throw new Error(`Both PostgreSQL and SQLite initialization failed. Container: ${containerError instanceof Error ? containerError.message : String(containerError)}, SQLite: ${sqliteError instanceof Error ? sqliteError.message : String(sqliteError)}`);
+        }
+      }
+    }
     
     try {
       if (config.type === 'postgresql') {
@@ -82,6 +117,8 @@ export class DatabaseFactory {
           database: config.database,
           user: config.user
         });
+        
+        // Since containers should be running now, create the database instance directly
         const pgDatabase = new PostgreSQLDatabaseRefactored({
           host: config.host!,
           port: config.port!,
@@ -93,42 +130,22 @@ export class DatabaseFactory {
           connectionTimeoutMillis: config.connectionTimeoutMillis,
         });
         
-        // Test the connection and initialize
-        Logger.info('Testing PostgreSQL connection...');
-        try {
-          const healthResult = await pgDatabase.healthCheck();
-          if (healthResult.status !== 'healthy') {
-            throw new Error(`PostgreSQL health check failed: ${healthResult.status}`);
-          }
-          Logger.success('PostgreSQL connection test passed');
-          
-          Logger.info('PostgreSQL schema already initialized during construction');
-          
-          this.instance = pgDatabase;
-          Logger.success('PostgreSQL database initialized successfully');
-          
-        } catch (error) {
-          Logger.warn('PostgreSQL connection failed, falling back to SQLite', { 
-            error: error instanceof Error ? error.message : String(error) 
-          });
-          
-          // Fall back to SQLite
-          const fallbackConfig: DatabaseConfig = {
-            type: 'sqlite',
-            sqliteDbPath: process.env.SQLITE_DB_PATH || './claude_memory.db'
-          };
-          
-          Logger.info('Initializing SQLite database as fallback...', { path: fallbackConfig.sqliteDbPath });
-          const sqliteDatabase = new SQLiteDatabaseRefactored(fallbackConfig.sqliteDbPath!);
-          this.instance = sqliteDatabase;
-          Logger.success('SQLite database initialized successfully (fallback)');
+        // Verify the database is healthy
+        Logger.info('Performing final PostgreSQL health check...');
+        const healthResult = await pgDatabase.healthCheck();
+        if (healthResult.status !== 'healthy') {
+          throw new Error(`PostgreSQL health check failed: ${healthResult.status}`);
         }
+        Logger.success('PostgreSQL database initialized and verified successfully');
+        
+        this.instance = pgDatabase;
         
       } else if (config.type === 'sqlite') {
-        Logger.info('Initializing SQLite database...', { path: config.sqliteDbPath });
+        // SQLite fallback (should not normally be used in production)
+        Logger.warn('Initializing SQLite database (fallback mode)', { path: config.sqliteDbPath });
         const sqliteDatabase = new SQLiteDatabaseRefactored(config.sqliteDbPath!);
         this.instance = sqliteDatabase;
-        Logger.success('SQLite database initialized successfully');
+        Logger.success('SQLite database initialized successfully (fallback)');
         
       } else {
         Logger.error('Unsupported database type attempted', { type: config.type });
@@ -139,11 +156,14 @@ export class DatabaseFactory {
       return this.instance!; // Non-null assertion since we just assigned it
       
     } catch (error) {
-      Logger.error('Failed to initialize database', { 
+      Logger.error('Database initialization failed after container setup', { 
         type: config.type,
         error: error instanceof Error ? error.message : String(error)
       });
-      throw error;
+      
+      // In production mode with containers, we should fail fast
+      // rather than falling back to SQLite, as this indicates a real infrastructure problem
+      throw new Error(`Database initialization failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   
@@ -233,6 +253,101 @@ export class DatabaseFactory {
         status: 'unhealthy',
         details: { error: error instanceof Error ? error.message : String(error) }
       };
+    }
+  }
+  
+  // Ensure all required containers are running before database initialization
+  private static async ensureRequiredContainers(): Promise<void> {
+    Logger.separator('Container Dependency Check');
+    Logger.info('Ensuring all required containers are running...');
+    
+    try {
+      const containerManager = new ContainerManager();
+      
+      // Check if container engine is available
+      const engineAvailable = await containerManager.isContainerEngineAvailable();
+      if (!engineAvailable) {
+        Logger.warn('Container engine not available, checking if machine needs to be started...');
+        
+        // For podman, try to start the machine
+        if (containerManager.getContainerEngine() === 'podman') {
+          const machineRunning = await containerManager.isPodmanMachineRunning();
+          if (!machineRunning) {
+            Logger.info('Starting Podman machine...');
+            // This will be handled by ensureBabySkyNetContainers
+          }
+        }
+      }
+      
+      // Ensure all Baby-SkyNet containers are running
+      Logger.info('Starting Baby-SkyNet container services...');
+      const containerResults = await containerManager.ensureBabySkyNetContainers();
+      
+      // Log results
+      if (containerResults.alreadyRunning.length > 0) {
+        Logger.success('Containers already running', { containers: containerResults.alreadyRunning });
+      }
+      
+      if (containerResults.started.length > 0) {
+        Logger.success('Containers started successfully', { containers: containerResults.started });
+        
+        // Wait for containers to fully initialize
+        Logger.info('Waiting for containers to fully initialize...');
+        await new Promise(resolve => setTimeout(resolve, 8000)); // Longer wait for database readiness
+      }
+      
+      if (containerResults.failed.length > 0) {
+        Logger.error('Some containers failed to start', { containers: containerResults.failed });
+        throw new Error(`Failed to start required containers: ${containerResults.failed.join(', ')}`);
+      }
+      
+      // Verify PostgreSQL is accessible (this will throw if not)
+      Logger.info('Verifying PostgreSQL accessibility...');
+      const config = DatabaseConfigManager.getDatabaseConfig();
+      if (config.type === 'postgresql') {
+        await this.testPostgreSQLConnection(config);
+        Logger.success('PostgreSQL container is ready and accessible');
+      }
+      
+      Logger.success('All required containers are running and ready');
+      
+    } catch (error) {
+      Logger.error('Failed to ensure required containers', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      
+      // In production setup, we should fail and let the caller handle fallback
+      // since the infrastructure should be available
+      throw new Error(`Container dependency check failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  
+  // Test PostgreSQL connection without creating a full instance
+  private static async testPostgreSQLConnection(config: DatabaseConfig): Promise<void> {
+    const { Pool } = await import('pg');
+    const testPool = new Pool({
+      host: config.host,
+      port: config.port,
+      database: config.database,
+      user: config.user,
+      password: config.password,
+      max: 1, // Only need one connection for testing
+      idleTimeoutMillis: 1000,
+      connectionTimeoutMillis: config.connectionTimeoutMillis || 2000,
+      ssl: false
+    });
+
+    try {
+      const client = await testPool.connect();
+      client.release();
+      Logger.debug('PostgreSQL connectivity test passed');
+    } catch (error) {
+      Logger.debug('PostgreSQL connectivity test failed', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      throw error;
+    } finally {
+      await testPool.end();
     }
   }
 }

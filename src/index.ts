@@ -18,6 +18,7 @@ import { Neo4jClient } from './database/Neo4jClient.js';
 import { EmbeddingFactory } from './embedding/index.js';
 import { Logger } from './utils/Logger.js';
 import { ContainerManager } from './utils/ContainerManager.js';
+import { Version } from './utils/Version.js';
 
 
 /**
@@ -28,18 +29,18 @@ import { ContainerManager } from './utils/ContainerManager.js';
 // Load environment variables with explicit path (ES Module compatible)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const __baby_skynet_version = 2.3
 const envPath = path.join(__dirname, '../.env');
 dotenv.config({ path: envPath });
 
-// Initialize logging FIRST (but silently for MCP)
+// Initialize version and logging FIRST (but silently for MCP)
+await Version.initialize();
 Logger.initialize();
 
 // Reduced startup logging for MCP compatibility
 if (process.env.DEBUG_BABY_SKYNET) {
-  Logger.separator(`Baby-SkyNet v${__baby_skynet_version} Startup`);
+  Logger.separator(`Baby-SkyNet v${Version.getVersionSync()} Startup`);
   Logger.info('Baby-SkyNet MCP Server starting...', { 
-    version: __baby_skynet_version,
+    version: Version.getVersionSync(),
     envPath,
     nodeVersion: process.version
   });
@@ -49,6 +50,7 @@ if (process.env.DEBUG_BABY_SKYNET) {
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
 let LLM_MODEL = 'llama3.1:latest'; // Default, wird von Args überschrieben
+let EMBEDDING_MODEL = 'openai'; // Default, wird von Args/Env überschrieben
 
 // Debug: Check if API key is loaded (only in debug mode)
 if (process.env.DEBUG_BABY_SKYNET) {
@@ -117,11 +119,43 @@ if (brainModel) {
     provider,
     baseUrl: provider === 'Anthropic' ? ANTHROPIC_BASE_URL : OLLAMA_BASE_URL
   });
+} else if (process.env.BRAIN_MODEL) {
+  LLM_MODEL = process.env.BRAIN_MODEL;
+  const provider = process.env.BRAIN_MODEL.startsWith('claude-') ? 'Anthropic' : 'Ollama';
+  Logger.info('LLM model configured from environment', { 
+    model: LLM_MODEL, 
+    provider,
+    baseUrl: provider === 'Anthropic' ? ANTHROPIC_BASE_URL : OLLAMA_BASE_URL
+  });
 } else {
   Logger.info('Using default LLM model', { 
     model: LLM_MODEL, 
     provider: 'Ollama',
     baseUrl: OLLAMA_BASE_URL
+  });
+}
+
+// Embedding Model Configuration
+Logger.separator('Embedding Configuration');
+const embeddingModelArg = process.argv.find(arg => arg.startsWith('--embedding-model='))?.split('=')[1];
+if (embeddingModelArg) {
+  EMBEDDING_MODEL = embeddingModelArg;
+  const provider = embeddingModelArg === 'openai' ? 'OpenAI' : 'Ollama';
+  Logger.info('Embedding model configured from arguments', { 
+    model: EMBEDDING_MODEL, 
+    provider
+  });
+} else if (process.env.EMBEDDING_MODEL) {
+  EMBEDDING_MODEL = process.env.EMBEDDING_MODEL;
+  const provider = process.env.EMBEDDING_MODEL === 'openai' ? 'OpenAI' : 'Ollama';
+  Logger.info('Embedding model configured from environment', { 
+    model: EMBEDDING_MODEL, 
+    provider
+  });
+} else {
+  Logger.info('Using default embedding model', { 
+    model: EMBEDDING_MODEL, 
+    provider: 'OpenAI'
   });
 }
 
@@ -198,12 +232,12 @@ async function initializeNeo4j() {
 Logger.separator('MCP Server Setup');
 const server = new Server({
   name: 'skynet-home-edition-mcp',
-  version: '2.1.0',
+  version: Version.getVersionSync(),
 });
 
 Logger.info('MCP Server created', { 
   name: 'skynet-home-edition-mcp',
-  version: '2.1.0',
+  version: Version.getVersionSync(),
   sdkVersion: '@modelcontextprotocol/sdk'
 });
 
@@ -705,14 +739,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} - Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen${containerStatus}\n${containerActions}`,
+            text: `📊 Baby SkyNet MCP Server v${Version.getVersionSync()} - Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen${containerStatus}\n${containerActions}`,
           }],
         };
       } catch (error) {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${__baby_skynet_version} Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ❌ Error loading\n🕸️ Neo4j Graph: ❌ Error loading\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available${containerStatus}\n${containerActions}`,
+            text: `📊 Baby SkyNet MCP Server v${Version.getVersionSync()} Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ❌ Error loading\n🕸️ Neo4j Graph: ❌ Error loading\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available${containerStatus}\n${containerActions}`,
           }],
         };
       }
@@ -1771,16 +1805,17 @@ async function main() {
   Logger.info('Phase 5: Connecting MCP server...');
   await server.connect(transport);
   
-  Logger.success('Baby-SkyNet MCP Server v2.3 fully operational!');
+  Logger.success(`Baby-SkyNet MCP Server v${Version.getVersionSync()} fully operational!`);
   Logger.success('Memory Management + Multi-Provider Semantic Analysis + Graph Database ready!');
   Logger.info('Server status', {
-    version: __baby_skynet_version,
+    version: Version.getVersionSync(),
     database: !!memoryDb,
     chromadb: !!chromaClient,
     neo4j: !!neo4jClient,
     jobProcessor: !!jobProcessor,
     analyzer: !!analyzer,
-    llmModel: LLM_MODEL
+    llmModel: LLM_MODEL,
+    embeddingModel: EMBEDDING_MODEL
   });
 }
 

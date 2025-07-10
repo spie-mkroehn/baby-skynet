@@ -28,9 +28,13 @@ export class DatabaseConfigManager {
     const postgresUser = process.env.POSTGRES_USER;
     const postgresPassword = process.env.POSTGRES_PASSWORD;
     
-    // If PostgreSQL config is complete, use PostgreSQL
-    if (postgresHost && postgresPort && postgresDb && postgresUser && postgresPassword) {
-      Logger.info('Using PostgreSQL database configuration');
+    // Only use PostgreSQL if ALL required config values are present and non-empty
+    if (postgresHost && postgresHost.trim() && 
+        postgresPort && postgresPort.trim() && 
+        postgresDb && postgresDb.trim() && 
+        postgresUser && postgresUser.trim() && 
+        postgresPassword && postgresPassword.trim()) {
+      Logger.info('Using PostgreSQL database configuration (production mode)');
       return {
         type: 'postgresql',
         host: postgresHost,
@@ -40,12 +44,21 @@ export class DatabaseConfigManager {
         password: postgresPassword,
         max: parseInt(process.env.POSTGRES_MAX_CONNECTIONS || '20', 10),
         idleTimeoutMillis: parseInt(process.env.POSTGRES_IDLE_TIMEOUT_MILLIS || '30000', 10),
-        connectionTimeoutMillis: parseInt(process.env.POSTGRES_CONNECTION_TIMEOUT_MILLIS || '2000', 10),
+        connectionTimeoutMillis: parseInt(process.env.POSTGRES_CONNECTION_TIMEOUT_MILLIS || '5000', 10), // Increased timeout
       };
     }
     
-    // Fall back to SQLite
-    Logger.info('Using SQL database configuration (fallback)');
+    // Fall back to SQLite only for development/testing
+    Logger.warn('Using SQLite database configuration (development/fallback mode)', {
+      reason: 'PostgreSQL configuration incomplete or missing',
+      missingVars: [
+        !postgresHost && 'POSTGRES_HOST',
+        !postgresPort && 'POSTGRES_PORT', 
+        !postgresDb && 'POSTGRES_DB',
+        !postgresUser && 'POSTGRES_USER',
+        !postgresPassword && 'POSTGRES_PASSWORD'
+      ].filter(Boolean)
+    });
     const defaultSqlitePath = process.env.SQLITE_DB_PATH || './claude_memory.db';
     
     return {

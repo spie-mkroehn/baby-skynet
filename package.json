@@ -1,7 +1,7 @@
 {
-  "name": "skynet-home-edition-mcp",
-  "version": "2.1.0",
-  "description": "Memory Management MCP Server for Claude's Brain 2.0",
+  "name": "baby-skynet",
+  "version": "1.0.0",
+  "description": "Memory Management MCP Server for LLM Brains",
   "main": "build/index.js",
   "type": "module",
   "scripts": {
