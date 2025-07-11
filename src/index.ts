@@ -20,6 +20,64 @@ import { Logger } from './utils/Logger.js';
 import { ContainerManager } from './utils/ContainerManager.js';
 import { Version } from './utils/Version.js';
 
+// Global error handling to prevent silent exits
+process.on('uncaughtException', (error) => {
+  Logger.error('Uncaught Exception - Server will continue running', {
+    error: error.message,
+    stack: error.stack,
+    timestamp: new Date().toISOString()
+  });
+  // Don't exit, just log the error
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  Logger.error('Unhandled Promise Rejection - Server will continue running', {
+    reason: String(reason),
+    promise: promise.toString(),
+    timestamp: new Date().toISOString()
+  });
+  // Don't exit, just log the error
+});
+
+// Graceful shutdown handling
+process.on('SIGINT', () => {
+  Logger.info('Received SIGINT signal - initiating graceful shutdown');
+  gracefulShutdown();
+});
+
+process.on('SIGTERM', () => {
+  Logger.info('Received SIGTERM signal - initiating graceful shutdown');
+  gracefulShutdown();
+});
+
+// Graceful shutdown function
+async function gracefulShutdown() {
+  Logger.info('Starting graceful shutdown...');
+  
+  try {
+    // Close database connections
+    if (chromaClient) {
+      Logger.info('Closing ChromaDB connection...');
+      // ChromaDB doesn't have explicit close method
+    }
+    
+    if (neo4jClient) {
+      Logger.info('Closing Neo4j connection...');
+      await neo4jClient.disconnect?.();
+    }
+    
+    if (memoryDb) {
+      Logger.info('Closing SQLite database...');
+      await memoryDb.close?.();
+    }
+    
+    Logger.success('Graceful shutdown completed');
+  } catch (error) {
+    Logger.error('Error during shutdown', error);
+  }
+  
+  process.exit(0);
+}
 
 /**
  * Baby SkyNet MCP Server v2.3
@@ -42,7 +100,8 @@ if (process.env.DEBUG_BABY_SKYNET) {
   Logger.info('Baby-SkyNet MCP Server starting...', { 
     version: Version.getVersionSync(),
     envPath,
-    nodeVersion: process.version
+    nodeVersion: process.version,
+    mode: 'Resilient startup - will run even if containers are unavailable'
   });
 }
 
@@ -176,17 +235,28 @@ async function initializeChromaDB() {
     
     Logger.info('Using ChromaDB collection', { collectionName });
     
+    // Try to connect with timeout
     chromaClient = new ChromaDBClient('http://localhost:8000', collectionName);
-    Logger.info('ChromaDBClient created, starting initialization...');
+    Logger.info('ChromaDBClient created, testing connection...');
     
-    await chromaClient.initialize();
+    // Test connection with timeout
+    await Promise.race([
+      chromaClient.initialize(),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('ChromaDB connection timeout (30s)')), 30000)
+      )
+    ]);
+    
     Logger.success('ChromaDB initialization completed successfully');
-    
     Logger.success(`ChromaDB connected: Collection "${collectionName}"`);
   } catch (error) {
-    Logger.error(`ChromaDB initialization failed: ${error}`);
-    Logger.error('ChromaDB error details', error);
+    Logger.warn(`ChromaDB initialization failed - continuing without vector database`, {
+      error: error instanceof Error ? error.message : String(error),
+      recommendation: 'Start ChromaDB container using memory_status tool with autostart=true',
+      impact: 'Semantic search features will be limited'
+    });
     chromaClient = null;
+    // Don't throw - allow server to continue without ChromaDB
   }
 }
 
@@ -608,7 +678,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   
   Logger.debug('Tool call received', { toolName: name, hasArgs: !!args });
 
-  switch (name) {
+  try {
+    switch (name) {
     case 'memory_status':
       Logger.debug('Executing memory_status tool', { autostart: args?.autostart });
       
@@ -622,12 +693,60 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         try {
           // Use the central container management method
-          await containerManager.ensureAllRequiredContainers();
-          containerActions += `✅ All required containers ensured (PostgreSQL, ChromaDB, Neo4j)\n`;
+          const containerResults = await containerManager.ensureBabySkyNetContainers();
+          
+          // Report what happened with containers
+          if (containerResults.alreadyRunning.length > 0) {
+            containerActions += `✅ Already running: ${containerResults.alreadyRunning.join(', ')}\n`;
+          }
+          if (containerResults.started.length > 0) {
+            containerActions += `🚀 Started: ${containerResults.started.join(', ')}\n`;
+          }
+          if (containerResults.failed.length > 0) {
+            containerActions += `❌ Failed to start: ${containerResults.failed.join(', ')}\n`;
+          }
+          
+          if (containerResults.failed.length === 0) {
+            containerActions += `✅ All required containers operational (PostgreSQL, ChromaDB, Neo4j)\n`;
+          }
           
           // Wait a moment for containers to fully start
           Logger.info('Waiting for containers to fully initialize...');
           await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          // After containers are started, attempt database upgrade
+          Logger.info('Checking for possible database upgrade...');
+          const currentDbType = DatabaseFactory.getCurrentDatabaseType();
+          containerActions += `📊 Current database: ${currentDbType}\n`;
+          
+          if (currentDbType === 'SQLite') {
+            Logger.info('Currently using SQLite - attempting PostgreSQL upgrade...');
+            const upgradeSuccess = await DatabaseFactory.attemptPostgreSQLUpgrade();
+            
+            if (upgradeSuccess) {
+              containerActions += `🔄 Successfully upgraded from SQLite to PostgreSQL!\n`;
+              containerActions += `🎉 Full database functionality now available\n`;
+              
+              // Update global memoryDb reference
+              memoryDb = DatabaseFactory.getCurrentInstance();
+              
+              // Re-initialize components that depend on the database
+              if (memoryDb) {
+                jobProcessor = new JobProcessor(memoryDb as any, LLM_MODEL);
+                analyzer = new SemanticAnalyzer(LLM_MODEL);
+                memoryDb.analyzer = analyzer;
+                
+                // Re-link external clients
+                await linkClientsToDatabase();
+                
+                Logger.success('All components updated with new PostgreSQL database');
+              }
+            } else {
+              containerActions += `ℹ️  Database upgrade not possible - continuing with SQLite\n`;
+            }
+          } else if (currentDbType === 'PostgreSQL') {
+            containerActions += `✅ Already using PostgreSQL - no upgrade needed\n`;
+          }
           
         } catch (error) {
           containerActions = `❌ Container management failed: ${error}\n`;
@@ -688,7 +807,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         const llmStatus = await processor.testLLMConnection();
         const categories = await db.listCategories!();
-        const totalMemories = categories.reduce((sum: number, cat: any) => sum + cat.count, 0);
+        const totalMemories = categories.reduce((sum: number, cat: any) => {
+          const count = cat.count || 0;
+          return sum + (typeof count === 'number' ? count : 0);
+        }, 0);
         const categoryCount = categories.length;
         
         const llmStatusText = llmStatus.status === 'ready' ? '✅ Ready' : 
@@ -697,9 +819,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         // Get ChromaDB statistics
         let chromaDBInfo = '❌ Not Available';
-        if (db.chromaClient) {
+        if (chromaClient) {
           try {
-            const chromaInfo = await db.chromaClient.getCollectionInfo();
+            const chromaInfo = await chromaClient.getCollectionInfo();
             if (chromaInfo.initialized) {
               chromaDBInfo = `✅ ${chromaInfo.count} concepts (${chromaInfo.embedding_provider})`;
             } else {
@@ -712,23 +834,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         // Get Neo4j statistics  
         let neo4jInfo = '❌ Not Available';
-        if (db.neo4jClient) {
+        Logger.debug('Neo4j status check', { 
+          neo4jClientExists: !!neo4jClient,
+          neo4jClientType: neo4jClient ? 'object' : 'null',
+          dbNeo4jClientExists: !!(memoryDb as any)?.neo4jClient,
+          dbNeo4jClientType: (memoryDb as any)?.neo4jClient ? 'object' : 'null'
+        });
+        
+        // Try to use the Neo4j client from the database if global variable is null
+        const activeNeo4jClient = neo4jClient || (memoryDb as any)?.neo4jClient;
+        
+        if (activeNeo4jClient) {
           try {
-            const graphStats = await db.getGraphStatistics!();
-            if (graphStats.success) {
-              neo4jInfo = `✅ ${graphStats.total_nodes} nodes, ${graphStats.total_relationships} relationships`;
+            // Call getGraphStatistics directly on the neo4jClient
+            const graphStats = await activeNeo4jClient.getGraphStatistics();
+            Logger.debug('Neo4j graph statistics result', graphStats);
+            if (graphStats.connected) {
+              neo4jInfo = `✅ ${graphStats.totalNodes} nodes, ${graphStats.totalRelationships} relationships`;
             } else {
               neo4jInfo = `❌ ${graphStats.error || 'Not connected'}`;
             }
           } catch (error) {
-            neo4jInfo = `❌ Error: ${error}`;
+            Logger.error('Neo4j statistics error', error);
+            neo4jInfo = `❌ Error: ${error instanceof Error ? error.message : String(error)}`;
           }
+        } else {
+          Logger.warn('Neo4j client is null in both global variable and database');
         }
+        
+        // Get current database type
+        const currentDbType = DatabaseFactory.getCurrentDatabaseType();
+        const dbStatusWithType = `${dbStatus} (${currentDbType})`;
         
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${Version.getVersionSync()} - Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen${containerStatus}\n${containerActions}`,
+            text: `📊 Baby SkyNet MCP Server v${Version.getVersionSync()} - Memory Status\n\n🗄️  SQL Database: ${dbStatusWithType}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen${containerStatus}\n${containerActions}`,
           }],
         };
       } catch (error) {
@@ -1659,6 +1800,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+  } catch (error) {
+    Logger.error('Tool execution failed', { toolName: name, error: error.message });
+    return { 
+      content: [{ 
+        type: 'text', 
+        text: `❌ Tool execution failed: ${error.message || 'Unknown error'}` 
+      }] 
+    };
+  }
 });
 
 // Helper functions for database operations
@@ -1773,42 +1923,111 @@ async function main() {
   Logger.separator('Server Startup Sequence');
   Logger.info('Starting server initialization sequence...');
   
-  // Database initialisieren
-  Logger.info('Phase 1: Initializing Database...');
-  await initializeDatabase();
-  
-  // ChromaDB initialisieren
-  Logger.info('Phase 2: Initializing ChromaDB...');
-  await initializeChromaDB();
-  await linkClientsToDatabase(); // Link ChromaDB to database with health check
-  
-  // Neo4j initialisieren
-  Logger.info('Phase 3: Initializing Neo4j...');
-  await initializeNeo4j();
-  await linkClientsToDatabase(); // Link Neo4j to database with health check
-  
-  // MCP Transport setup
-  Logger.info('Phase 4: Setting up MCP transport...');
-  const transport = new StdioServerTransport();
-  
-  Logger.info('Phase 5: Connecting MCP server...');
-  await server.connect(transport);
-  
-  Logger.success(`Baby-SkyNet MCP Server v${Version.getVersionSync()} fully operational!`);
-  Logger.success('Memory Management + Multi-Provider Semantic Analysis + Graph Database ready!');
-  Logger.info('Server status', {
-    version: Version.getVersionSync(),
-    database: !!memoryDb,
-    chromadb: !!chromaClient,
-    neo4j: !!neo4jClient,
-    jobProcessor: !!jobProcessor,
-    analyzer: !!analyzer,
-    llmModel: LLM_MODEL,
-    embeddingModel: EMBEDDING_MODEL
+  try {
+    // Database initialisieren (mit Container-Fallback zu SQLite)
+    Logger.info('Phase 1: Initializing Database...');
+    await initializeDatabase();
+    
+    // ChromaDB initialisieren (optional - Server läuft auch ohne)
+    Logger.info('Phase 2: Initializing ChromaDB...');
+    await initializeChromaDB();
+    await linkClientsToDatabase(); // Link ChromaDB to database with health check
+    
+    // Neo4j initialisieren (optional - Server läuft auch ohne)
+    Logger.info('Phase 3: Initializing Neo4j...');
+    await initializeNeo4j();
+    await linkClientsToDatabase(); // Link Neo4j to database with health check
+    
+    // MCP Transport setup
+    Logger.info('Phase 4: Setting up MCP transport...');
+    const transport = new StdioServerTransport();
+    
+    Logger.info('Phase 5: Connecting MCP server...');
+    await server.connect(transport);
+    
+    Logger.success(`Baby-SkyNet MCP Server v${Version.getVersionSync()} fully operational!`);
+    Logger.success('Memory Management + Multi-Provider Semantic Analysis + Graph Database ready!');
+    
+    // Log system status with available components
+    const systemStatus = {
+      version: Version.getVersionSync(),
+      database: !!memoryDb,
+      chromadb: !!chromaClient,
+      neo4j: !!neo4jClient,
+      jobProcessor: !!jobProcessor,
+      analyzer: !!analyzer,
+      llmModel: LLM_MODEL,
+      embeddingModel: EMBEDDING_MODEL
+    };
+    
+    Logger.info('Server status', systemStatus);
+    
+    // Log recommendations if components are missing
+    const missingComponents = [];
+    if (!chromaClient) missingComponents.push('ChromaDB (semantic search limited)');
+    if (!neo4jClient) missingComponents.push('Neo4j (graph features unavailable)');
+    
+    if (missingComponents.length > 0) {
+      Logger.info('Missing optional components', { 
+        missing: missingComponents,
+        recommendation: 'Use memory_status tool with autostart=true to start containers'
+      });
+    }
+
+    // Start keep-alive monitoring
+    startKeepAliveMonitoring();
+    
+  } catch (error) {
+    Logger.error('Critical server startup failure', { 
+      error: error.message,
+      phase: 'main initialization',
+      recommendation: 'Check container status and database configuration'
+    });
+    throw error; // Re-throw to trigger main catch handler
+  }
+}
+
+// Keep-alive monitoring to detect connection issues
+function startKeepAliveMonitoring() {
+  // Periodic health check every 5 minutes
+  const healthCheckInterval = setInterval(async () => {
+    try {
+      Logger.debug('Performing periodic health check...');
+      
+      // Check database connection
+      if (memoryDb) {
+        await memoryDb.all('SELECT 1'); // Simple query to test connection
+      }
+      
+      // Check ChromaDB connection
+      if (chromaClient) {
+        await chromaClient.getCollectionInfo(); // Test ChromaDB
+      }
+      
+      Logger.debug('Health check passed');
+    } catch (error) {
+      Logger.warn('Health check failed - some components may be unavailable', { error: error.message });
+    }
+  }, 5 * 60 * 1000); // 5 minutes
+
+  // Clean up on shutdown
+  process.on('exit', () => {
+    clearInterval(healthCheckInterval);
   });
 }
 
 main().catch((error) => {
-  Logger.error('Server startup failed', error);
-  process.exit(1);
+  Logger.error('Server startup failed', { 
+    error: error.message, 
+    stack: error.stack,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Attempt graceful cleanup before exit
+  gracefulShutdown();
+  
+  // Exit with error code after a brief delay to allow cleanup
+  setTimeout(() => {
+    process.exit(1);
+  }, 1000);
 });

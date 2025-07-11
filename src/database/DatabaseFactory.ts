@@ -75,18 +75,32 @@ export class DatabaseFactory {
     DatabaseConfigManager.validateConfig(config);
     DatabaseConfigManager.logConfig(config);
     
-    // Try to ensure containers are running if using PostgreSQL
+    // Check for PostgreSQL availability (but don't auto-start containers)
     if (config.type === 'postgresql') {
-      Logger.info('PostgreSQL configuration detected - ensuring container infrastructure...');
+      Logger.info('PostgreSQL configuration detected - checking if containers are available...');
       
       try {
         const containerManager = new ContainerManager();
-        await containerManager.ensureAllRequiredContainers();
-        Logger.success('Container infrastructure ready');
+        
+        // Quick check if container engine is available at all
+        const engineAvailable = await containerManager.isContainerEngineAvailable();
+        if (!engineAvailable) {
+          throw new Error(`Container engine not available - use start-containers script first`);
+        }
+        
+        // Quick check if PostgreSQL container is running
+        const postgresStatus = await containerManager.getContainerStatus('baby-skynet-postgres');
+        if (!postgresStatus.running) {
+          throw new Error(`PostgreSQL container not running - use start-containers script first`);
+        }
+        
+        Logger.success('PostgreSQL container is available and running');
       } catch (containerError) {
-        Logger.warn('Container setup failed, falling back to SQLite', { 
+        Logger.warn('PostgreSQL containers not available, falling back to SQLite', { 
           error: containerError instanceof Error ? containerError.message : String(containerError),
-          recommendation: 'Start containers manually using memory_status tool or "podman machine start"'
+          recommendation: 'Run start-containers script first for full functionality',
+          instructions: 'Windows: start-containers.bat | macOS/Linux: ./start-containers-*.sh',
+          fallbackMode: 'SQLite will be used until containers are started'
         });
         
         // Force fallback to SQLite
@@ -257,4 +271,124 @@ export class DatabaseFactory {
     }
   }
   
+  /**
+   * Attempt to upgrade from SQLite to PostgreSQL if containers become available
+   * This is called by memory_status tool after starting containers
+   */
+  static async attemptPostgreSQLUpgrade(): Promise<boolean> {
+    Logger.separator('Database Upgrade Check');
+    Logger.info('Checking if PostgreSQL upgrade is possible...');
+    
+    // Only upgrade if currently using SQLite
+    if (!this.instance) {
+      Logger.warn('No database instance exists - cannot upgrade');
+      return false;
+    }
+    
+    // Check if we're already using PostgreSQL
+    const currentConfig = DatabaseConfigManager.getDatabaseConfig();
+    if (currentConfig.type === 'postgresql') {
+      Logger.info('Already configured for PostgreSQL - checking if we need to switch from fallback');
+      
+      // Check if current instance is actually SQLite (fallback mode)
+      const instanceName = this.instance.constructor.name;
+      if (instanceName !== 'SQLiteDatabaseRefactored') {
+        Logger.info('Already using PostgreSQL instance - no upgrade needed');
+        return false;
+      }
+      
+      Logger.info('Currently in SQLite fallback mode - attempting PostgreSQL upgrade...');
+    } else {
+      Logger.info('Database configured for SQLite - no upgrade attempted');
+      return false;
+    }
+    
+    try {
+      const containerManager = new ContainerManager();
+      
+      // Check if container engine is available
+      const engineAvailable = await containerManager.isContainerEngineAvailable();
+      if (!engineAvailable) {
+        Logger.warn('Container engine not available - cannot upgrade to PostgreSQL');
+        return false;
+      }
+      
+      // Check if PostgreSQL container is now running
+      const postgresStatus = await containerManager.getContainerStatus('baby-skynet-postgres');
+      if (!postgresStatus.running) {
+        Logger.warn('PostgreSQL container not running - cannot upgrade');
+        return false;
+      }
+      
+      Logger.info('PostgreSQL container is now available - attempting upgrade...');
+      
+      // Create new PostgreSQL instance
+      const config = DatabaseConfigManager.getDatabaseConfig();
+      const pgDatabase = new PostgreSQLDatabaseRefactored({
+        host: config.host!,
+        port: config.port!,
+        database: config.database!,
+        user: config.user!,
+        password: config.password!,
+        max: config.max,
+        idleTimeoutMillis: config.idleTimeoutMillis,
+        connectionTimeoutMillis: config.connectionTimeoutMillis,
+      });
+      
+      // Test PostgreSQL connection
+      Logger.info('Testing PostgreSQL connection...');
+      const healthResult = await pgDatabase.healthCheck();
+      if (healthResult.status !== 'healthy') {
+        throw new Error(`PostgreSQL health check failed: ${JSON.stringify(healthResult.details)}`);
+      }
+      
+      // Close old SQLite instance if possible
+      try {
+        if (this.instance && typeof this.instance.close === 'function') {
+          Logger.info('Closing old SQLite database...');
+          await this.instance.close();
+        }
+      } catch (closeError) {
+        Logger.warn('Failed to close old SQLite instance', { error: closeError });
+        // Continue anyway
+      }
+      
+      // Switch to PostgreSQL
+      this.instance = pgDatabase;
+      Logger.success('Successfully upgraded from SQLite to PostgreSQL!');
+      Logger.info('Database upgrade completed', {
+        from: 'SQLite',
+        to: 'PostgreSQL',
+        status: 'healthy'
+      });
+      
+      return true;
+      
+    } catch (error) {
+      Logger.error('PostgreSQL upgrade failed', { 
+        error: error instanceof Error ? error.message : String(error),
+        fallback: 'Continuing with SQLite'
+      });
+      return false;
+    }
+  }
+  
+  /**
+   * Get current database type for status reporting
+   */
+  static getCurrentDatabaseType(): string {
+    if (!this.instance) return 'none';
+    
+    const instanceName = this.instance.constructor.name;
+    if (instanceName === 'PostgreSQLDatabaseRefactored') return 'PostgreSQL';
+    if (instanceName === 'SQLiteDatabaseRefactored') return 'SQLite';
+    return 'unknown';
+  }
+
+  /**
+   * Get current database instance (used after upgrades)
+   */
+  static getCurrentInstance(): IMemoryDatabase | null {
+    return this.instance;
+  }
 }
