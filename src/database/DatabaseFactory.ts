@@ -13,11 +13,12 @@ export interface IMemoryDatabase {
   searchMemoriesBasic(searchTerm: string, categories?: string[]): Promise<any[]>; // Updated from searchMemories
   getMemoryById(id: number): Promise<any | null>;
   updateMemoryAdvanced?(id: number, updates?: { category?: string; topic?: string; content?: string }, topic?: string, content?: string, category?: string): Promise<boolean | any>; // Made optional
+  updateMemory?(id: number, updates: { topic?: string; content?: string; category?: string }): Promise<{ changedRows: number }>;
   deleteMemory(id: number): Promise<boolean | any>;
   getMemoryStats?(): Promise<any>;
   
   // Extended SQLite-compatible methods
-  listCategories?(): Promise<any[]>;
+  listCategories?(): Promise<Array<{category: string, count: number}>>;
   getRecentMemories?(limit: number): Promise<any[]>;
   saveNewMemoryAdvanced?(category: string, topic: string, content: string): Promise<any>;
   searchMemoriesAdvanced?(query: string, categories?: string[]): Promise<any>;

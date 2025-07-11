@@ -83,6 +83,7 @@ export abstract class MemoryPipelineBase {
   abstract getMemoryById(id: number): Promise<any | null>;
   abstract deleteMemory(id: number): Promise<boolean | any>;
   abstract addToShortMemory(memory: any): Promise<void>;
+  abstract updateMemory(id: number, updates: { topic?: string; content?: string; category?: string }): Promise<{ changedRows: number }>;
   abstract moveMemory?(id: number, newCategory: string): Promise<any>;
   
   // Abstract search methods that must be implemented by subclasses
@@ -94,12 +95,20 @@ export abstract class MemoryPipelineBase {
     const VALID_CATEGORIES = [
       'faktenwissen', 'prozedurales_wissen', 'erlebnisse', 
       'bewusstsein', 'humor', 'zusammenarbeit', 
-      'forgotten_memories', 'kernerinnerungen', 'short_memory'
+      'forgotten_memories', 'kernerinnerungen', 'short_memory',
+      'undefined'  // Temporary category for LLM-analysis pipeline
     ];
     
     if (!VALID_CATEGORIES.includes(category)) {
-      throw new Error(`Invalid category: ${category}. Valid categories: ${VALID_CATEGORIES.join(', ')}`);
+      Logger.warn('Category validation failed - setting to undefined for LLM analysis', { 
+        provided: category, 
+        valid: VALID_CATEGORIES 
+      });
+      // Don't throw error - let the pipeline handle category mapping
+      return;
     }
+    
+    Logger.debug('Category validation passed', { category });
   }
 
   /**
@@ -120,12 +129,28 @@ export abstract class MemoryPipelineBase {
     });
 
     try {
-      // Guard Clause: Validate category
-      this.validateCategory(category);
+      // Phase 0: Category normalization for LLM analysis
+      const VALID_CATEGORIES = [
+        'faktenwissen', 'prozedurales_wissen', 'erlebnisse', 
+        'bewusstsein', 'humor', 'zusammenarbeit', 
+        'forgotten_memories', 'kernerinnerungen', 'short_memory'
+      ];
+      
+      const normalizedCategory = VALID_CATEGORIES.includes(category) ? category : 'undefined';
+      
+      if (normalizedCategory === 'undefined') {
+        Logger.info('Category normalized for LLM analysis', { 
+          originalCategory: category, 
+          normalizedCategory: 'undefined',
+          reason: 'Will be determined by LLM analysis'
+        });
+      }
 
       // Phase 1: Temporary SQL storage (to get ID)
-      Logger.info('Phase 1: Saving to SQL for ID generation...');
-      const memoryResult = await this.saveNewMemory(category, topic, content);
+      Logger.info('Phase 1: Saving to SQL for ID generation...', { 
+        category: normalizedCategory 
+      });
+      const memoryResult = await this.saveNewMemory(normalizedCategory, topic, content);
       const memoryId = memoryResult.id;
 
       // Get the saved memory for analysis
@@ -141,6 +166,16 @@ export abstract class MemoryPipelineBase {
       }
 
       const analysisResult = await this.analyzer.extractAndAnalyzeConcepts(savedMemory);
+      
+      // Debug: Log analysis result immediately
+      Logger.debug('Semantic analysis completed', {
+        memoryId,
+        hasError: !!analysisResult.error,
+        hasSemanticConcepts: !!analysisResult.semantic_concepts,
+        semanticConceptsLength: analysisResult.semantic_concepts?.length || 0,
+        analysisResultKeys: Object.keys(analysisResult || {})
+      });
+      
       if (analysisResult.error) {
         Logger.error('Semantic analysis failed - keeping memory in SQL as fallback', { 
           memoryId, 
@@ -163,6 +198,16 @@ export abstract class MemoryPipelineBase {
       let stored_in_chroma = false;
       let totalConceptsStored = 0;
       
+      // Debug: Check ChromaDB and concepts availability
+      Logger.debug('ChromaDB availability check', {
+        memoryId,
+        hasChromaClient: !!this.chromaClient,
+        hasSemanticConcepts: !!analysisResult.semantic_concepts,
+        semanticConceptsLength: analysisResult.semantic_concepts?.length || 0,
+        semanticConceptsType: typeof analysisResult.semantic_concepts,
+        analysisResultKeys: Object.keys(analysisResult || {})
+      });
+      
       if (this.chromaClient && analysisResult.semantic_concepts) {
         try {
           Logger.info('Creating separate ChromaDB entries for each concept', { 
@@ -174,21 +219,22 @@ export abstract class MemoryPipelineBase {
             // Create separate ChromaDB entry for each concept with its summary
             const conceptEntry = {
               id: `${savedMemory.id}_concept_${index + 1}`,
-              content: concept.extracted_summaries?.[0] || concept.concept_description || concept.content,
+              concept_description: concept.concept_description || concept.extracted_summaries?.[0] || concept.content,
+              concept_title: concept.concept_title || `Concept ${index + 1}`,
               metadata: {
                 // Source memory metadata
                 source_memory_id: savedMemory.id,
                 source_category: savedMemory.category,
                 source_topic: savedMemory.topic,
-                source_date: savedMemory.date,
-                source_created_at: savedMemory.created_at,
+                source_date: savedMemory.date?.toString() || '',
+                source_created_at: savedMemory.created_at?.toString() || '',
                 
                 // Concept-specific metadata
                 concept_title: concept.concept_title || `Concept ${index + 1}`,
                 concept_index: index + 1,
                 concept_memory_type: concept.memory_type,
                 concept_confidence: concept.confidence,
-                concept_mood: concept.mood,
+                concept_mood: concept.mood || '',
                 concept_keywords: concept.keywords?.join(', ') || '',
                 
                 // Enhanced search metadata
@@ -199,8 +245,11 @@ export abstract class MemoryPipelineBase {
 
             Logger.debug(`Storing concept ${index + 1}/${analysisResult.semantic_concepts.length}`, {
               memoryId,
-              conceptTitle: conceptEntry.metadata.concept_title,
-              contentLength: conceptEntry.content.length
+              conceptTitle: conceptEntry.concept_title,
+              contentLength: conceptEntry.concept_description?.length || 0,
+              hasContent: !!conceptEntry.concept_description,
+              conceptDescription: concept.concept_description?.substring(0, 50) + '...',
+              extractedSummaries: concept.extracted_summaries?.length || 0
             });
 
             return this.chromaClient!.storeConcepts(savedMemory, [conceptEntry]);
@@ -256,7 +305,7 @@ export abstract class MemoryPipelineBase {
         });
       }
 
-      // Phase 4: Memory Type Detection and Routing Decision
+      // Phase 4: Memory Type Detection and Category Update
       const memoryType = analysisResult.semantic_concepts?.[0]?.memory_type;
       if (!memoryType) {
         Logger.error('Could not determine memory type from analysis - keeping memory in SQL with original category', { memoryId });
@@ -266,19 +315,50 @@ export abstract class MemoryPipelineBase {
           stored_in_neo4j: false,
           relationships_created: 0,
           stored_in_sqlite: true, // Memory is kept in SQL
-          analyzed_category: category, // Use original category as fallback
-          significance_reason: 'Could not determine memory type from analysis - kept in SQL with original category',
+          analyzed_category: normalizedCategory, // Use normalized category as fallback
+          significance_reason: 'Could not determine memory type from analysis - kept in SQL with normalized category',
           error: 'Could not determine memory type from analysis'
         };
       }
 
+      // Phase 4.1: Update category in SQL database based on LLM analysis
+      if (normalizedCategory === 'undefined' && memoryType) {
+        Logger.info('Updating memory category based on LLM analysis', { 
+          memoryId, 
+          originalCategory: category,
+          normalizedCategory: 'undefined',
+          llmDeterminedType: memoryType 
+        });
+        
+        try {
+          // Update the memory with the LLM-determined category
+          const updateResult = await this.updateMemory(memoryId, { category: memoryType });
+          if (updateResult.changedRows > 0) {
+            Logger.success('Memory category updated successfully', { 
+              memoryId, 
+              newCategory: memoryType 
+            });
+          } else {
+            Logger.warn('Memory category update had no effect', { memoryId });
+          }
+        } catch (updateError) {
+          Logger.error('Failed to update memory category', { 
+            memoryId, 
+            newCategory: memoryType,
+            error: updateError 
+          });
+        }
+      }
+
+      // Phase 4.2: Routing Decision
       let shouldKeepInSQL = false;
       let significanceReason = '';
 
       Logger.info('Memory type routing decision', { 
         memoryId, 
         memoryType, 
-        category,
+        originalCategory: category,
+        finalCategory: memoryType,
         isFactualOrProcedural: ['faktenwissen', 'prozedurales_wissen'].includes(memoryType)
       });
 
@@ -318,18 +398,47 @@ export abstract class MemoryPipelineBase {
         });
       }
 
-      // Phase 6: SQL Management based on significance
+      // Phase 6: SQL Management based on significance and external DB availability
       Logger.info('SQL management decision', { 
         memoryId, 
         shouldKeepInSQL, 
+        stored_in_chroma,
+        stored_in_chroma_value: stored_in_chroma,
+        chromaDBAvailable: !!this.chromaClient,
+        memoryType,
+        isFactualOrProcedural: ['faktenwissen', 'prozedurales_wissen'].includes(memoryType),
         willDelete: !shouldKeepInSQL 
       });
 
-      const finalMemoryId = shouldKeepInSQL ? memoryId : 0;
+      // Fallback logic: Keep in SQL if external DBs failed and this is valuable content
+      let actuallyKeepInSQL = shouldKeepInSQL;
       
-      if (!shouldKeepInSQL) {
-        // Remove from SQL if not significant
-        Logger.warn('Removing memory from SQL (not significant or wrong type)', { 
+      Logger.debug('Fallback logic evaluation', {
+        memoryId,
+        shouldKeepInSQL,
+        stored_in_chroma,
+        memoryType,
+        condition1: !shouldKeepInSQL,
+        condition2: !stored_in_chroma,
+        condition3: ['faktenwissen', 'prozedurales_wissen'].includes(memoryType),
+        allConditionsMet: !shouldKeepInSQL && !stored_in_chroma && ['faktenwissen', 'prozedurales_wissen'].includes(memoryType)
+      });
+      
+      if (!shouldKeepInSQL && !stored_in_chroma && ['faktenwissen', 'prozedurales_wissen'].includes(memoryType)) {
+        actuallyKeepInSQL = true;
+        Logger.warn('Keeping memory in SQL as fallback - external DBs not available', { 
+          memoryId, 
+          memoryType,
+          chromaStored: stored_in_chroma,
+          reason: 'ChromaDB storage failed - using SQL as fallback'
+        });
+      }
+
+      const finalMemoryId = actuallyKeepInSQL ? memoryId : 0;
+      
+      if (!actuallyKeepInSQL) {
+        // Remove from SQL only if successfully stored elsewhere
+        Logger.warn('Removing memory from SQL (not significant or stored elsewhere)', { 
           memoryId, 
           memoryType, 
           reason: significanceReason 
@@ -337,15 +446,22 @@ export abstract class MemoryPipelineBase {
         await this.deleteMemory(memoryId);
         Logger.success('Memory removed from SQL successfully', { memoryId });
       } else {
-        if (memoryType !== category) {
-          await this.moveMemory(memoryId, memoryType);
+        if (memoryType !== normalizedCategory) {
+          // Category was already updated in Phase 4.1, just log
+          Logger.info('Memory kept in SQL with updated category', { 
+            memoryId, 
+            finalCategory: memoryType,
+            wasNormalized: normalizedCategory === 'undefined'
+          });
         }
-        Logger.info('Memory kept in SQL as significant', { 
+        Logger.info('Memory kept in SQL', { 
           memoryId, 
           memoryType, 
           originalCategory: category,
           finalCategory: memoryType,
-          reason: significanceReason
+          keptAsSignificant: shouldKeepInSQL,
+          keptAsFallback: !shouldKeepInSQL && actuallyKeepInSQL,
+          reason: shouldKeepInSQL ? significanceReason : 'Fallback for failed external storage'
         });
       }
 
@@ -453,13 +569,18 @@ export abstract class MemoryPipelineBase {
       };
 
     } catch (error) {
-      Logger.error('Advanced memory pipeline failed', { category, topic, error });
+      Logger.error('Advanced memory pipeline failed', { 
+        category, 
+        topic, 
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
       return {
         memory_id: 0,
         stored_in_chroma: false,
         stored_in_neo4j: false,
         relationships_created: 0,
-        error: `Pipeline failed: ${error}`
+        error: `Pipeline failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }
   }
@@ -885,7 +1006,7 @@ export abstract class MemoryPipelineBase {
           relationship_depth: maxRelationshipDepth,
           cluster_info: {
             total_nodes_traversed: relationships.length,
-            relationship_types: [...new Set(relationships.map(r => r.type))]
+            relationship_types: Array.from(new Set(relationships.map(r => r.type)))
           }
         },
         total_found: totalFound,
@@ -947,6 +1068,4 @@ export abstract class MemoryPipelineBase {
       return { ...result, graph_score: graphScore };
     }).sort((a, b) => b.graph_score - a.graph_score);
   }
-
-  // ...existing code...
 }

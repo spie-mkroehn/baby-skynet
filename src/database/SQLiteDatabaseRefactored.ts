@@ -305,18 +305,22 @@ export class SQLiteDatabaseRefactored extends MemoryPipelineBase {
     return stats;
   }
 
-  async listCategories(): Promise<string[]> {
-    Logger.debug('Listing categories from SQLite');
+  async listCategories(): Promise<Array<{category: string, count: number}>> {
+    Logger.debug('Listing categories with counts from SQLite');
     
     const query = `
-      SELECT DISTINCT category 
+      SELECT category, COUNT(*) as count
       FROM memories 
+      GROUP BY category
       ORDER BY category
     `;
     
     const stmt = this.db.prepare(query);
-    const results = stmt.all() as { category: string }[];
-    const categories = results.map(row => row.category);
+    const results = stmt.all() as { category: string, count: number }[];
+    const categories = results.map(row => ({
+      category: row.category,
+      count: row.count
+    }));
     
     Logger.debug('Categories listed from SQLite', { categoriesCount: categories.length });
     return categories;
@@ -461,6 +465,58 @@ export class SQLiteDatabaseRefactored extends MemoryPipelineBase {
       };
     }
   }
+
+  async updateMemory(id: number, updates: { topic?: string; content?: string; category?: string }): Promise<{ changedRows: number }> {
+    Logger.debug('Updating memory in SQLite', { memoryId: id, updates });
+    
+    const updateFields: string[] = [];
+    const values: any[] = [];
+    
+    if (updates.topic !== undefined) {
+      updateFields.push('topic = ?');
+      values.push(updates.topic);
+    }
+    
+    if (updates.content !== undefined) {
+      updateFields.push('content = ?');
+      values.push(updates.content);
+    }
+    
+    if (updates.category !== undefined) {
+      updateFields.push('category = ?');
+      values.push(updates.category);
+    }
+    
+    if (updateFields.length === 0) {
+      Logger.warn('No fields to update provided');
+      return { changedRows: 0 };
+    }
+    
+    // Always update the updated_at timestamp
+    updateFields.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    
+    // Add ID parameter
+    values.push(id);
+    
+    const query = `
+      UPDATE memories 
+      SET ${updateFields.join(', ')}
+      WHERE id = ?
+    `;
+    
+    const stmt = this.db.prepare(query);
+    const result = stmt.run(...values);
+    
+    Logger.debug('Memory updated in SQLite', { 
+      memoryId: id, 
+      changedRows: result.changes,
+      updatedFields: Object.keys(updates)
+    });
+    
+    return { changedRows: result.changes };
+  }
+
 }
 
 /**

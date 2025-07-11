@@ -60,6 +60,22 @@ export class ChromaDBClient {
     const results: { success: boolean; stored: number; errors: string[] } = { success: true, stored: 0, errors: [] };
 
     try {
+      // Debug: Log all concepts to see what we're getting
+      Logger.debug('ChromaDB: Received concepts for validation', {
+        memoryId: originalMemory.id,
+        conceptCount: semanticConcepts.length,
+        concepts: semanticConcepts.map((c, i) => ({
+          index: i,
+          concept_title: c.concept_title,
+          has_concept_description: !!c.concept_description,
+          concept_description_length: c.concept_description?.length || 0,
+          concept_description_preview: c.concept_description?.substring(0, 50) + '...',
+          has_extracted_summaries: !!c.extracted_summaries,
+          extracted_summaries_count: c.extracted_summaries?.length || 0,
+          has_content: !!c.content
+        }))
+      });
+
       // Filter out concepts with empty or missing descriptions
       const validConcepts = semanticConcepts.filter(concept => 
         concept.concept_description && 

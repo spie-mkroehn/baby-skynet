@@ -1,6 +1,5 @@
 import { writeFileSync, appendFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 
 /**
  * Simple File Logger for Baby-SkyNet
@@ -13,10 +12,9 @@ export class Logger {
     static initialize() {
         if (this.initialized) return;
         
-        // Get project root directory
-        const __filename = fileURLToPath(import.meta.url);
-        const __dirname = dirname(__filename);
-        this.logFile = join(__dirname, '../../baby_skynet.log');
+        // Get project root directory - Node.js compatible way
+        const __dirname = process.cwd();
+        this.logFile = join(__dirname, 'baby_skynet.log');
         
         // Initialize log file with session header
         const sessionHeader = `\n${'='.repeat(80)}\n🚀 Baby-SkyNet Session Started: ${new Date().toISOString()}\n${'='.repeat(80)}\n`;

@@ -132,13 +132,35 @@ export class Neo4jClient {
     queryParts.push('created_at: $created_at');
     
     if (memory.metadata !== undefined) {
-      cleanParameters.metadata = JSON.stringify(memory.metadata);
-      queryParts.push('metadata: $metadata');
+      // Serialize metadata carefully to avoid Map objects
+      try {
+        cleanParameters.metadata = JSON.stringify(memory.metadata);
+        queryParts.push('metadata: $metadata');
+        Logger.debug('Neo4j: Metadata serialized', { 
+          memoryId: memory.id,
+          metadataType: typeof memory.metadata,
+          metadataKeys: Object.keys(memory.metadata || {})
+        });
+      } catch (error) {
+        Logger.warn('Neo4j: Failed to serialize metadata, skipping', { 
+          memoryId: memory.id,
+          error: error.message
+        });
+      }
     }
     
     if (memory.embedding !== undefined && memory.embedding !== null) {
-      cleanParameters.embedding = memory.embedding;
-      queryParts.push('embedding: $embedding');
+      // Check if embedding is an array of numbers
+      if (Array.isArray(memory.embedding) && memory.embedding.every(n => typeof n === 'number')) {
+        cleanParameters.embedding = memory.embedding;
+        queryParts.push('embedding: $embedding');
+      } else {
+        Logger.warn('Neo4j: Invalid embedding format, skipping', { 
+          memoryId: memory.id,
+          embeddingType: typeof memory.embedding,
+          isArray: Array.isArray(memory.embedding)
+        });
+      }
     }
     
     const query = `
@@ -569,7 +591,11 @@ export class Neo4jClient {
 
       // Füge Konzepte als Eigenschaften hinzu, falls vorhanden
       if (concepts && concepts.length > 0) {
-        const conceptsString = concepts.join(', ');
+        const conceptTitles = concepts
+          .map(concept => concept.concept_title || concept.title || 'Unnamed Concept')
+          .filter(title => title && title.trim())
+          .join(', ');
+          
         const updateQuery = `
           MATCH (m:Memory {id: $memoryId})
           SET m.concepts = $concepts
@@ -578,12 +604,12 @@ export class Neo4jClient {
 
         await this.runQuery(updateQuery, {
           memoryId: memory.id.toString(),
-          concepts: conceptsString
+          concepts: conceptTitles
         });
 
         Logger.debug('Neo4j: Concepts added to memory node', { 
           memoryId: memory.id, 
-          concepts: conceptsString 
+          concepts: conceptTitles 
         });
       }
 

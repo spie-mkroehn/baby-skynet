@@ -7,6 +7,7 @@
 
 import { Pool, PoolClient } from 'pg';
 import { MemoryPipelineBase, AdvancedMemoryResult } from './MemoryPipelineBase.js';
+import { MemoryIntegrationHelper } from './MemoryIntegrationHelper.js';
 import { Logger } from '../utils/Logger.js';
 import { PostgreSQLPoolManager } from './PostgreSQLPoolManager.js';
 
@@ -453,19 +454,23 @@ export class PostgreSQLDatabaseRefactored extends MemoryPipelineBase {
     }
   }
 
-  async listCategories(): Promise<string[]> {
-    Logger.debug('Listing categories from PostgreSQL');
+  async listCategories(): Promise<Array<{category: string, count: number}>> {
+    Logger.debug('Listing categories with counts from PostgreSQL');
     
     const query = `
-      SELECT DISTINCT category 
+      SELECT category, COUNT(*) as count
       FROM memories 
+      GROUP BY category
       ORDER BY category
     `;
     
     const client = await this.pool.connect();
     try {
       const result = await client.query(query);
-      const categories = result.rows.map(row => row.category);
+      const categories = result.rows.map(row => ({
+        category: row.category,
+        count: parseInt(row.count)
+      }));
       
       Logger.debug('Categories listed from PostgreSQL', { categoriesCount: categories.length });
       return categories;
@@ -495,35 +500,120 @@ export class PostgreSQLDatabaseRefactored extends MemoryPipelineBase {
     }
   }
 
-  // Override saveMemoryWithGraph to use the base class pipeline
+  // Override saveMemoryWithGraph to use direct ChromaDB/Neo4j integration
   async saveMemoryWithGraph(
     category: string, 
     topic: string, 
     content: string, 
     forceRelationships?: any[]
   ): Promise<AdvancedMemoryResult> {
-    // This now uses the sophisticated pipeline from MemoryPipelineBase!
-    Logger.info('PostgreSQL: Using advanced memory pipeline', { category, topic });
+    Logger.info('PostgreSQL: Using advanced memory pipeline with direct integration', { category, topic });
     
-    const result = await this.executeAdvancedMemoryPipeline(category, topic, content);
-    
-    Logger.success('PostgreSQL: Advanced pipeline completed', {
-      memory_id: result.memory_id,
-      stored_in_chroma: result.stored_in_chroma,
-      stored_in_neo4j: result.stored_in_neo4j,
-      significance_reason: result.significance_reason
-    });
-    
-    return {
-      memory_id: result.memory_id || 0,
-      stored_in_chroma: result.stored_in_chroma || false,
-      stored_in_neo4j: result.stored_in_neo4j || false,
-      relationships_created: result.relationships_created || 0,
-      success: result.success,
-      stored_in_sqlite: result.stored_in_sqlite,
-      analyzed_category: result.analyzed_category,
-      significance_reason: result.significance_reason
-    };
+    try {
+      // Phase 1: Save to SQL for ID generation
+      Logger.info('Phase 1: Saving to SQL for ID generation...');
+      const savedMemory = await this.saveNewMemory(category, topic, content);
+      const memoryId = savedMemory.id;
+      
+      // Phase 2: Semantic Analysis
+      Logger.info('Phase 2: Starting semantic analysis...');
+      let semanticConcepts: any[] = [];
+      let memoryType = category;
+      
+      if (this.analyzer) {
+        try {
+          const analysisResult = await this.analyzer.extractAndAnalyzeConcepts({
+            category,
+            topic,
+            content
+          });
+          
+          if (analysisResult.semantic_concepts) {
+            semanticConcepts = analysisResult.semantic_concepts;
+            // Use LLM-determined category if available
+            if (semanticConcepts.length > 0 && semanticConcepts[0].memory_type) {
+              memoryType = semanticConcepts[0].memory_type;
+              
+              // Update memory with LLM-determined category
+              await this.updateMemory(memoryId, { category: memoryType });
+              Logger.info('Memory category updated', { memoryId, newCategory: memoryType });
+            }
+          }
+        } catch (analysisError) {
+          Logger.error('Semantic analysis failed', { error: String(analysisError) });
+        }
+      }
+      
+      // Phase 3: ChromaDB Integration
+      Logger.info('Phase 3: ChromaDB storage with granular concepts...');
+      let chromaStored = false;
+      
+      if (this.chromaClient && semanticConcepts.length > 0) {
+        try {
+          const chromaResult = await MemoryIntegrationHelper.storeConceptsInChromaDB(
+            this.chromaClient, 
+            savedMemory, 
+            semanticConcepts
+          );
+          chromaStored = chromaResult.success;
+          
+          if (chromaResult.errors.length > 0) {
+            Logger.warn('Some ChromaDB concept storage failed', {
+              memoryId,
+              errors: chromaResult.errors
+            });
+          }
+        } catch (chromaError) {
+          Logger.error('ChromaDB storage failed', { memoryId, error: String(chromaError) });
+        }
+      }
+      
+      // Phase 4: Neo4j Integration
+      Logger.info('Phase 4: Initializing Neo4j...');
+      let neo4jStored = false;
+      
+      if (this.neo4jClient) {
+        try {
+          const neo4jResult = await MemoryIntegrationHelper.storeMemoryInNeo4j(
+            this.neo4jClient,
+            savedMemory
+          );
+          neo4jStored = neo4jResult.success;
+          
+          if (!neo4jResult.success) {
+            Logger.warn('Neo4j storage failed', { memoryId, error: neo4jResult.error });
+          }
+        } catch (neo4jError) {
+          Logger.error('Neo4j storage failed', { memoryId, error: String(neo4jError) });
+        }
+      }
+      
+      const result: AdvancedMemoryResult = {
+        memory_id: memoryId,
+        stored_in_chroma: chromaStored,
+        stored_in_neo4j: neo4jStored,
+        stored_in_short_memory: false,
+        relationships_created: 0,
+        significance_reason: `${memoryType} processed with ${semanticConcepts.length} concepts`
+      };
+      
+      Logger.success('PostgreSQL: Advanced pipeline completed', result);
+      
+      return {
+        memory_id: result.memory_id || 0,
+        stored_in_chroma: result.stored_in_chroma || false,
+        stored_in_neo4j: result.stored_in_neo4j || false,
+        relationships_created: 0,
+        success: true,
+        stored_in_sqlite: false,
+        analyzed_category: memoryType,
+        significance_reason: result.significance_reason
+      };
+      
+    } catch (error) {
+      Logger.error('Advanced memory pipeline failed', { error: String(error) });
+      throw error;
+    }
   }
 
   // Transaction support for complex operations
@@ -657,6 +747,62 @@ export class PostgreSQLDatabaseRefactored extends MemoryPipelineBase {
       };
     }
   }
+
+  async updateMemory(id: number, updates: { topic?: string; content?: string; category?: string }): Promise<{ changedRows: number }> {
+    Logger.debug('Updating memory in PostgreSQL', { memoryId: id, updates });
+    
+    const updateFields: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+    
+    if (updates.topic !== undefined) {
+      updateFields.push(`topic = $${paramIndex++}`);
+      values.push(updates.topic);
+    }
+    
+    if (updates.content !== undefined) {
+      updateFields.push(`content = $${paramIndex++}`);
+      values.push(updates.content);
+    }
+    
+    if (updates.category !== undefined) {
+      updateFields.push(`category = $${paramIndex++}`);
+      values.push(updates.category);
+    }
+    
+    if (updateFields.length === 0) {
+      Logger.warn('No fields to update provided');
+      return { changedRows: 0 };
+    }
+    
+    // Always update the updated_at timestamp
+    updateFields.push(`updated_at = $${paramIndex++}`);
+    values.push(new Date().toISOString());
+    
+    // Add ID parameter
+    values.push(id);
+    
+    const query = `
+      UPDATE memories 
+      SET ${updateFields.join(', ')}
+      WHERE id = $${paramIndex}
+    `;
+    
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(query, values);
+      Logger.debug('Memory updated in PostgreSQL', { 
+        memoryId: id, 
+        changedRows: result.rowCount,
+        updatedFields: Object.keys(updates)
+      });
+      
+      return { changedRows: result.rowCount || 0 };
+    } finally {
+      client.release();
+    }
+  }
+
 }
 
 /**

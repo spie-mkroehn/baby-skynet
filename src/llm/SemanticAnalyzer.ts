@@ -462,13 +462,22 @@ Return ONLY the JSON, no explanation.`;
       throw new Error('Expected non-empty array of concepts');
     }
     
-    // Validate concept structure
-    for (const concept of parsed) {
+    // Normalize field names and validate concept structure
+    const normalizedConcepts = parsed.map(concept => ({
+      title: concept.title || concept.Title,
+      description: concept.description || concept.Description
+    }));
+    
+    for (const concept of normalizedConcepts) {
       if (!concept.title || !concept.description) {
+        Logger.debug('Concept validation failed', { 
+          title: concept.title, 
+          description: concept.description 
+        });
         throw new Error('Each concept must have title and description');
       }
     }
     
-    return parsed;
+    return normalizedConcepts;
   }
 }

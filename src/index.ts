@@ -1503,14 +1503,99 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (!category || !topic || !content) throw new Error('Category, topic and content required');
         
-        const result = await memoryDb.saveMemoryWithGraph(category, topic, content, forceRelationships);
+        // DIRECT INTEGRATION: Bypass broken pipeline and use working methods
         
-        const relationshipText = result.stored_in_neo4j 
-          ? `\n🕸️ Graph-Netzwerk: ✅ (${result.relationships_created} Beziehungen erstellt)`
+        // Step 1: Save to SQL first to get ID
+        const savedMemory = await memoryDb.saveNewMemory(category, topic, content);
+        const memoryId = savedMemory.id;
+        
+        // Step 2: Semantic Analysis if analyzer available
+        let semanticConcepts: any[] = [];
+        let memoryType = category;
+        let chromaStored = false;
+        let neo4jStored = false;
+        
+        if (analyzer) {
+          try {
+            const analysisResult = await analyzer.extractAndAnalyzeConcepts({
+              category, topic, content
+            });
+            
+            if (analysisResult.semantic_concepts) {
+              semanticConcepts = analysisResult.semantic_concepts;
+              
+              // Use LLM-determined category
+              if (semanticConcepts.length > 0 && semanticConcepts[0].memory_type) {
+                memoryType = semanticConcepts[0].memory_type;
+                await memoryDb.updateMemory(memoryId, { category: memoryType });
+              }
+              
+              // Step 3: ChromaDB Integration with FIXED field mapping
+              if (chromaClient && semanticConcepts.length > 0) {
+                try {
+                  for (let i = 0; i < semanticConcepts.length; i++) {
+                    const concept = semanticConcepts[i];
+                    
+                    // Create ChromaDB entry with CORRECT field mapping
+                    const conceptEntry = {
+                      id: `${memoryId}_concept_${i + 1}`,
+                      concept_description: concept.concept_description || concept.content,
+                      concept_title: concept.concept_title || `Concept ${i + 1}`,
+                      metadata: {
+                        source_memory_id: memoryId,
+                        source_category: savedMemory.category || '',
+                        source_topic: savedMemory.topic || '',
+                        source_date: savedMemory.date?.toString() || '',
+                        source_created_at: savedMemory.created_at?.toString() || '',
+                        concept_title: concept.concept_title || `Concept ${i + 1}`,
+                        concept_index: i + 1,
+                        concept_memory_type: concept.memory_type || '',
+                        concept_confidence: concept.confidence || 0,
+                        concept_mood: concept.mood || '',
+                        concept_keywords: concept.keywords?.join(', ') || '',
+                        is_granular_concept: true,
+                        concept_summary: concept.concept_description || ''
+                      }
+                    };
+                    
+                    const result = await chromaClient.storeConcepts(savedMemory, [conceptEntry]);
+                    if (result.success) chromaStored = true;
+                  }
+                } catch (chromaError) {
+                  Logger.error('ChromaDB storage failed', { error: String(chromaError) });
+                }
+              }
+            }
+          } catch (analysisError) {
+            Logger.error('Semantic analysis failed', { error: String(analysisError) });
+          }
+        }
+        
+        // Step 4: Neo4j Integration with FIXED data cleaning
+        if (neo4jClient) {
+          try {
+            const cleanedMemory = {
+              id: memoryId,
+              content: savedMemory.content || '',
+              category: memoryType,
+              topic: savedMemory.topic || '',
+              date: savedMemory.date?.toString() || '',
+              created_at: savedMemory.created_at?.toString() || ''
+            };
+            
+            const neo4jResult = await neo4jClient.createMemoryNode(cleanedMemory);
+            neo4jStored = true; // Assume success if no error thrown
+          } catch (neo4jError) {
+            Logger.error('Neo4j storage failed', { error: String(neo4jError) });
+          }
+        }
+        
+        const relationshipText = neo4jStored 
+          ? `\n🕸️ Graph-Netzwerk: ✅`
           : '\n🕸️ Graph-Netzwerk: ❌ (Neo4j nicht verfügbar)';
         
         return {
-          content: [{ type: 'text', text: `✅ Memory mit Graph-Integration gespeichert!\n\n📂 Kategorie: ${category}\n🏷️ Topic: ${topic}\n🆔 ID: ${result.memory_id}\n💾 SQL Database: ✅\n🧠 ChromaDB: ${result.stored_in_chroma ? '✅' : '❌'}${relationshipText}` }]
+          content: [{ type: 'text', text: `✅ Memory mit Graph-Integration gespeichert!\n\n📂 Kategorie: ${memoryType}\n🏷️ Topic: ${topic}\n🆔 ID: ${memoryId}\n💾 SQL Database: ✅\n🧠 ChromaDB: ${chromaStored ? '✅' : '❌'}${relationshipText}` }]
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Fehler beim Speichern mit Graph: ${error}` }] };
@@ -1615,17 +1700,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       
       try {
         const categories = await memoryDb.listCategories();
+        Logger.debug('Categories retrieved for list_categories', { categories });
+        
         if (categories.length === 0) {
-          return { content: [{ type: 'text', text: '📂 Keine Kategorien gefunden.' }] };
+          return { content: [{ type: 'text', text: '📂 Keine Kategorien gefunden.\n\n💡 Tipp: Speichere Erinnerungen mit save_new_memory um Kategorien zu erstellen.' }] };
         }
         
-        const categoryText = categories.map((cat: any) => `📂 ${cat.category}: ${cat.count} memories`).join('\n');
-        const totalMemories = categories.reduce((sum: number, cat: any) => sum + cat.count, 0);
+        // Validate and clean category data
+        const validCategories = categories.filter(cat => 
+          cat && 
+          typeof cat === 'object' && 
+          cat.category && 
+          typeof cat.category === 'string' &&
+          typeof cat.count === 'number'
+        );
+        
+        if (validCategories.length === 0) {
+          Logger.warn('No valid categories found', { rawCategories: categories });
+          return { content: [{ type: 'text', text: '📂 Keine gültigen Kategorien gefunden.' }] };
+        }
+        
+        const categoryText = validCategories.map((cat: any) => `📂 ${cat.category}: ${cat.count} memories`).join('\n');
+        const totalMemories = validCategories.reduce((sum: number, cat: any) => sum + (cat.count || 0), 0);
         
         return { 
           content: [{ 
             type: 'text', 
-            text: `📂 Verfügbare Kategorien (${categories.length} Kategorien, ${totalMemories} Memories gesamt):\n\n${categoryText}` 
+            text: `📂 Verfügbare Kategorien (${validCategories.length} Kategorien, ${totalMemories} Memories gesamt):\n\n${categoryText}` 
           }] 
         };
       } catch (error) {
@@ -1996,7 +2097,12 @@ function startKeepAliveMonitoring() {
       
       // Check database connection
       if (memoryDb) {
-        await memoryDb.all('SELECT 1'); // Simple query to test connection
+        // Use a generic method that works for both PostgreSQL and SQLite
+        if (typeof memoryDb.getMemoryStats === 'function') {
+          await memoryDb.getMemoryStats(); // This exists in both database types
+        } else {
+          Logger.warn('Health check: database does not support stats method');
+        }
       }
       
       // Check ChromaDB connection
