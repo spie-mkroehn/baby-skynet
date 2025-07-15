@@ -323,30 +323,40 @@ export abstract class MemoryPipelineBase {
 
       // Phase 4.1: Update category in SQL database based on LLM analysis
       if (normalizedCategory === 'undefined' && memoryType) {
-        Logger.info('Updating memory category based on LLM analysis', { 
+        Logger.info('Checking if memory category should be updated in SQL', { 
           memoryId, 
           originalCategory: category,
           normalizedCategory: 'undefined',
           llmDeterminedType: memoryType 
         });
         
-        try {
-          // Update the memory with the LLM-determined category
-          const updateResult = await this.updateMemory(memoryId, { category: memoryType });
-          if (updateResult.changedRows > 0) {
-            Logger.success('Memory category updated successfully', { 
-              memoryId, 
-              newCategory: memoryType 
-            });
-          } else {
-            Logger.warn('Memory category update had no effect', { memoryId });
-          }
-        } catch (updateError) {
-          Logger.error('Failed to update memory category', { 
-            memoryId, 
-            newCategory: memoryType,
-            error: updateError 
+        // FIXED: Don't update SQL category for semantic memory types
+        if (['faktenwissen', 'prozedurales_wissen'].includes(memoryType)) {
+          Logger.info('Skipping SQL category update for semantic memory type', {
+            memoryId,
+            memoryType,
+            reason: 'faktenwissen/prozedurales_wissen will be moved to ChromaDB/Neo4j and removed from SQL'
           });
+          // Don't update the SQL category - it will be deleted anyway
+        } else {
+          try {
+            // Update the memory with the LLM-determined category
+            const updateResult = await this.updateMemory(memoryId, { category: memoryType });
+            if (updateResult.changedRows > 0) {
+              Logger.success('Memory category updated successfully', { 
+                memoryId, 
+                newCategory: memoryType 
+              });
+            } else {
+              Logger.warn('Memory category update had no effect', { memoryId });
+            }
+          } catch (updateError) {
+            Logger.error('Failed to update memory category', { 
+              memoryId, 
+              newCategory: memoryType,
+              error: updateError 
+            });
+          }
         }
       }
 
@@ -412,7 +422,7 @@ export abstract class MemoryPipelineBase {
 
       // Fallback logic: Keep in SQL if external DBs failed and this is valuable content
       let actuallyKeepInSQL = shouldKeepInSQL;
-      
+
       Logger.debug('Fallback logic evaluation', {
         memoryId,
         shouldKeepInSQL,
@@ -424,14 +434,16 @@ export abstract class MemoryPipelineBase {
         allConditionsMet: !shouldKeepInSQL && !stored_in_chroma && ['faktenwissen', 'prozedurales_wissen'].includes(memoryType)
       });
       
+      // FIXED: faktenwissen & prozedurales_wissen should NEVER be stored in SQL
+      // Even as fallback - they belong only in semantic storage (ChromaDB/Neo4j)
       if (!shouldKeepInSQL && !stored_in_chroma && ['faktenwissen', 'prozedurales_wissen'].includes(memoryType)) {
-        actuallyKeepInSQL = true;
-        Logger.warn('Keeping memory in SQL as fallback - external DBs not available', { 
+        Logger.warn('ChromaDB storage failed for semantic memory type - will NOT fallback to SQL', { 
           memoryId, 
           memoryType,
           chromaStored: stored_in_chroma,
-          reason: 'ChromaDB storage failed - using SQL as fallback'
+          reason: 'faktenwissen/prozedurales_wissen never belongs in SQL - not even as fallback'
         });
+        // Keep actuallyKeepInSQL = false - do not store in SQL
       }
 
       const finalMemoryId = actuallyKeepInSQL ? memoryId : 0;
@@ -468,26 +480,20 @@ export abstract class MemoryPipelineBase {
       // Phase 7: Short Memory Management
       let stored_in_short_memory = false;
       if (!shouldKeepInSQL) {
-        // Only add certain types to short memory
-        if (!['faktenwissen', 'prozedurales_wissen'].includes(memoryType)) {
-          Logger.info('Adding to short memory (allowed memory type)', { 
-            memoryId, 
-            memoryType, 
-            willAddToShortMemory: true 
-          });
-          await this.addToShortMemory({
-            topic: topic,
-            content: content,
-            date: new Date().toISOString().split('T')[0]
-          });
-          stored_in_short_memory = true;
-        } else {
-          Logger.info('Skipping short memory for excluded type', { 
-            memoryId, 
-            memoryType, 
-            reason: 'faktenwissen/prozedurales_wissen never stored in SQL' 
-          });
-        }
+        // FIXED: Add ALL memory types to short memory when not kept in SQL
+        // faktenwissen & prozedurales_wissen should be in short memory for session continuity
+        Logger.info('Adding to short memory (not kept in SQL)', { 
+          memoryId, 
+          memoryType, 
+          willAddToShortMemory: true 
+        });
+        await this.addToShortMemory({
+          topic: topic,
+          content: content,
+          date: new Date().toISOString().split('T')[0]
+        });
+        stored_in_short_memory = true;
+        Logger.success('Memory added to short memory for session continuity', { memoryId, memoryType });
       }
 
       // Phase 8: Neo4j Integration (if available)

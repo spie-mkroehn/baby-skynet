@@ -1388,7 +1388,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               // Use LLM-determined category
               if (semanticConcepts.length > 0 && semanticConcepts[0].memory_type) {
                 memoryType = semanticConcepts[0].memory_type;
-                await memoryDb.updateMemory(memoryId, { category: memoryType });
+                
+                // FIXED: Don't update SQL category for semantic memory types that will be removed
+                if (!['faktenwissen', 'prozedurales_wissen'].includes(memoryType)) {
+                  await memoryDb.updateMemory(memoryId, { category: memoryType });
+                }
               }
               
               // Step 3: ChromaDB Integration with FIXED field mapping
@@ -1450,13 +1454,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             Logger.error('Neo4j storage failed', { error: String(neo4jError) });
           }
         }
+
+        // Step 5: Significance Check
+        const significanceResult = await analyzer.evaluateSignificance({
+            category, topic, content
+        }, memoryType);
+        
+        // Step 6: FIXED - Remove semantic memory types from SQL
+        let keptInSQL = true;
+        if (['faktenwissen', 'prozedurales_wissen'].includes(memoryType) || !significanceResult.significant) {
+          try {
+            await memoryDb.deleteMemory(memoryId);
+            keptInSQL = false;
+            Logger.info('Semantic memory type removed from SQL', { memoryId, memoryType });
+          } catch (deleteError) {
+            Logger.error('Failed to remove semantic memory from SQL', { memoryId, memoryType, error: deleteError });
+          }
+        }
+        
+        // Step 7: FIXED - Add to Short Memory for session continuity if removed from SQL
+        let shortMemoryAdded = false;
+        if (!keptInSQL) {
+          try {
+            // Add to short memory for session continuity
+            await memoryDb.addToShortMemory({
+              topic: topic,
+              content: content,
+              date: new Date().toISOString().split('T')[0]
+            });
+            shortMemoryAdded = true;
+            Logger.info('Memory added to short memory for session continuity', { memoryId, memoryType });
+          } catch (shortMemoryError) {
+            Logger.error('Failed to add to short memory', { memoryId, memoryType, error: shortMemoryError });
+          }
+        }
         
         const relationshipText = neo4jStored 
           ? `\n🕸️ Graph-Netzwerk: ✅`
           : '\n🕸️ Graph-Netzwerk: ❌ (Neo4j nicht verfügbar)';
         
+        const sqlText = keptInSQL ? '✅' : '⏭️ Removed (semantic type)';
+        const shortMemoryText = shortMemoryAdded ? '\n💭 Short Memory: ✅ (Session continuity)' : '';
+        
         return {
-          content: [{ type: 'text', text: `✅ Memory mit Graph-Integration gespeichert!\n\n📂 Kategorie: ${memoryType}\n🏷️ Topic: ${topic}\n🆔 ID: ${memoryId}\n💾 SQL Database: ✅\n🧠 ChromaDB: ${chromaStored ? '✅' : '❌'}${relationshipText}` }]
+          content: [{ type: 'text', text: `✅ Memory mit Graph-Integration gespeichert!\n\n📂 Kategorie: ${memoryType}\n🏷️ Topic: ${topic}\n🆔 ID: ${memoryId}\n💾 SQL Database: ${sqlText}\n🧠 ChromaDB: ${chromaStored ? '✅' : '❌'}${relationshipText}${shortMemoryText}` }]
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Fehler beim Speichern mit Graph: ${error}` }] };

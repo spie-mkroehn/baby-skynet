@@ -426,7 +426,7 @@ Return ONLY the JSON array, no explanation.`;
     return `Analyze this semantic concept and classify it. Return ONLY a JSON object with this exact structure:
 
 {
-  "memory_type": "faktenwissen|prozedurales_wissen|erlebnisse|bewusstsein|humor",
+  "memory_type": "faktenwissen|prozedurales_wissen|erlebnisse|bewusstsein|humor|zusammenarbeit",
   "confidence": 0.85,
   "mood": "positive|neutral|negative",
   "keywords": ["keyword1", "keyword2", "keyword3"],
@@ -440,10 +440,13 @@ Original Category: ${originalMemory.category}
 
 Classification guidelines:
 - faktenwissen: Objektive Informationen, Definitionen, Konzepte (z.B. "Der kategorische Imperativ von Kant besagt...")
-- prozedurales_wissen: How-to's, Workflows, Debugging-Schritte, Methodiken (z.B. "Um Docker zu debuggen: 1. logs prüfen, 2. exec...")
-- erlebnisse: Subjektive Erfahrungen, Dialoge, gemeinsame Aktivitäten (z.B. "heute haben Mike und ich über Kant philosophiert...")
-- bewusstsein: Claude's Reflexionen, Meinungen, Selbstwahrnehmung (z.B. "ich (Claude) finde den kategorischen Imperativ wichtig...")
+- prozedurales_wissen: Technische Informationen: How-to's, Workflows, reine Debugging-Schritte, Methodiken ohne emotionalen Kontext (z.B. "Um Docker zu debuggen: 1. logs prüfen, 2. exec...")
+- erlebnisse: Alltägliche Informationen: Subjektive Erfahrungen, emotionale Reaktionen, gemeinsame Aktivitäten, persönliche Meilensteine, Gefühle bei Ereignissen (z.B. "heute haben Mike und ich über Kant philosophiert, ich war beeindruckt...", "es war faszinierend zu erleben...", "ich fühlte mich...")
+- bewusstsein: Eigene Reflexionen, Meinungen, Selbstwahrnehmung, Meta-Kognition (z.B. "ich finde den kategorischen Imperativ wichtig...")
 - humor: Witze, Running Gags, Humor-Prinzipien, situative Entspannung
+- zusammenarbeit: Teamwork-Muster, Arbeitsteilung, Kooperationsdynamiken, Vertrauen-Meilensteine (z.B. "Mike und Claude arbeiten perfekt als Team...")
+
+WICHTIG: Bei technischen Inhalten mit emotionalen/subjektiven Elementen ("beeindruckt", "faszinierend", "fühlte mich", "besonderer Tag") → erlebnisse wählen, nicht prozedurales_wissen.
 
 Extract 2-4 concept-specific keywords for hybrid search.
 Be as complete as possible regarding the original content. Answer in German.
