@@ -1882,33 +1882,62 @@ async function linkClientsToDatabase(): Promise<void> {
 
 // Server starten
 async function main() {
+  const serverStartTime = Date.now();
+  const phaseTimings: { [key: string]: number } = {};
+  
   Logger.separator('Server Startup Sequence');
-  Logger.info('Starting server initialization sequence...');
+  Logger.info('Starting server initialization sequence...', { 
+    timestamp: new Date().toISOString(),
+    nodeVersion: process.version,
+    platform: process.platform
+  });
   
   try {
     // Database initialisieren (mit Container-Fallback zu SQLite)
     Logger.info('Phase 1: Initializing Database...');
+    const dbStart = Date.now();
     await initializeDatabase();
+    phaseTimings['Database Init'] = Date.now() - dbStart;
     
     // ChromaDB initialisieren (optional - Server läuft auch ohne)
     Logger.info('Phase 2: Initializing ChromaDB...');
+    const chromaStart = Date.now();
     await initializeChromaDB();
     await linkClientsToDatabase(); // Link ChromaDB to database with health check
+    phaseTimings['ChromaDB Init'] = Date.now() - chromaStart;
     
     // Neo4j initialisieren (optional - Server läuft auch ohne)
     Logger.info('Phase 3: Initializing Neo4j...');
+    const neo4jStart = Date.now();
     await initializeNeo4j();
     await linkClientsToDatabase(); // Link Neo4j to database with health check
+    phaseTimings['Neo4j Init'] = Date.now() - neo4jStart;
     
     // MCP Transport setup
     Logger.info('Phase 4: Setting up MCP transport...');
+    const transportStart = Date.now();
     const transport = new StdioServerTransport();
+    phaseTimings['Transport Setup'] = Date.now() - transportStart;
     
     Logger.info('Phase 5: Connecting MCP server...');
+    const connectStart = Date.now();
     await server.connect(transport);
+    phaseTimings['MCP Connect'] = Date.now() - connectStart;
+    
+    const totalStartupTime = Date.now() - serverStartTime;
     
     Logger.success(`Baby-SkyNet MCP Server v${Version.getVersionSync()} fully operational!`);
     Logger.success('Memory Management + Multi-Provider Semantic Analysis + Graph Database ready!');
+    
+    // Log detailed startup timing
+    Logger.info('Startup timing breakdown', {
+      totalStartupTime: `${totalStartupTime}ms`,
+      phaseTimings: Object.entries(phaseTimings).map(([phase, duration]) => ({
+        phase,
+        duration: `${duration}ms`,
+        percentage: `${Math.round((duration / totalStartupTime) * 100)}%`
+      }))
+    });
     
     // Log system status with available components
     const systemStatus = {
@@ -1940,8 +1969,11 @@ async function main() {
     startKeepAliveMonitoring();
     
   } catch (error) {
+    const totalStartupTime = Date.now() - serverStartTime;
     Logger.error('Critical server startup failure', { 
       error: error.message,
+      totalStartupTime: `${totalStartupTime}ms`,
+      phaseTimings,
       phase: 'main initialization',
       recommendation: 'Check container status and database configuration'
     });

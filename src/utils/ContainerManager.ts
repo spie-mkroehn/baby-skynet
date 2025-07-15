@@ -48,23 +48,58 @@ export class ContainerManager {
    * Check if container engine (podman/docker) is available
    */
   async isContainerEngineAvailable(): Promise<boolean> {
+    const startTime = Date.now();
+    
     try {
+      Logger.debug('Checking container engine availability', { 
+        engine: this.containerEngine,
+        timestamp: new Date().toISOString()
+      });
+      
       await execAsync(`${this.containerEngine} --version`);
+      const versionCheckDuration = Date.now() - startTime;
+      
+      Logger.debug('Container engine version check completed', {
+        engine: this.containerEngine,
+        duration: `${versionCheckDuration}ms`
+      });
       
       // For podman, also check if machine is running
       if (this.containerEngine === 'podman') {
+        Logger.debug('Checking Podman machine status...', { timestamp: new Date().toISOString() });
+        const machineCheckStart = Date.now();
         const machineRunning = await this.isPodmanMachineRunning();
+        const machineCheckDuration = Date.now() - machineCheckStart;
+        
+        Logger.debug('Podman machine check completed', {
+          running: machineRunning,
+          duration: `${machineCheckDuration}ms`
+        });
+        
         if (!machineRunning) {
-          Logger.debug('Podman is available but machine is not running', { engine: this.containerEngine });
+          const totalDuration = Date.now() - startTime;
+          Logger.debug('Podman is available but machine is not running', { 
+            engine: this.containerEngine,
+            totalDuration: `${totalDuration}ms`,
+            versionCheckDuration: `${versionCheckDuration}ms`,
+            machineCheckDuration: `${machineCheckDuration}ms`
+          });
           return false;
         }
       }
       
+      const totalDuration = Date.now() - startTime;
+      Logger.debug('Container engine fully available', {
+        engine: this.containerEngine,
+        totalDuration: `${totalDuration}ms`
+      });
       return true;
     } catch (error) {
+      const totalDuration = Date.now() - startTime;
       Logger.debug('Container engine not available', { 
         engine: this.containerEngine, 
-        error: error instanceof Error ? error.message : String(error) 
+        error: error instanceof Error ? error.message : String(error),
+        duration: `${totalDuration}ms`
       });
       return false;
     }
@@ -310,26 +345,76 @@ export class ContainerManager {
       return true; // Docker doesn't use machines
     }
 
-    try {
-      const { stdout } = await execAsync('podman machine list --format json');
-      const machines = JSON.parse(stdout);
+    const maxRetries = 3;
+    const retryDelay = 1000; // 1 second
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const startTime = Date.now();
       
-      // Check if any machine is running
-      const runningMachine = machines.find((machine: any) => machine.Running === true);
-      
-      if (runningMachine) {
-        Logger.debug('Podman machine is running', { machineName: runningMachine.Name });
-        return true;
-      } else {
-        Logger.debug('No running Podman machine found');
-        return false;
+      try {
+        Logger.debug(`Podman machine check attempt ${attempt}/${maxRetries}`, { timestamp: new Date().toISOString() });
+        
+        const { stdout } = await execAsync('podman machine list --format json');
+        const duration = Date.now() - startTime;
+        
+        Logger.debug('Podman machine list command completed', { 
+          duration: `${duration}ms`,
+          attempt,
+          stdout: stdout.substring(0, 200) + (stdout.length > 200 ? '...' : '')
+        });
+        
+        const machines = JSON.parse(stdout);
+        
+        // Check if any machine is running
+        const runningMachine = machines.find((machine: any) => machine.Running === true);
+        
+        if (runningMachine) {
+          Logger.debug('Podman machine is running', { 
+            machineName: runningMachine.Name,
+            duration: `${duration}ms`,
+            attempt,
+            totalMachines: machines.length
+          });
+          return true;
+        } else {
+          Logger.debug('No running Podman machine found', { 
+            duration: `${duration}ms`,
+            attempt,
+            totalMachines: machines.length,
+            machines: machines.map((m: any) => ({ name: m.Name, running: m.Running }))
+          });
+          
+          // If this isn't the last attempt, wait before retrying
+          if (attempt < maxRetries) {
+            Logger.debug(`Retrying in ${retryDelay}ms...`, { nextAttempt: attempt + 1 });
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+          }
+        }
+      } catch (error) {
+        const duration = Date.now() - startTime;
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        
+        Logger.debug('Failed to check Podman machine status', { 
+          error: errorMsg,
+          duration: `${duration}ms`,
+          attempt,
+          maxRetries,
+          willRetry: attempt < maxRetries
+        });
+        
+        // If this isn't the last attempt, wait before retrying
+        if (attempt < maxRetries) {
+          Logger.debug(`Retrying in ${retryDelay}ms due to error...`, { nextAttempt: attempt + 1 });
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
       }
-    } catch (error) {
-      Logger.debug('Failed to check Podman machine status', { 
-        error: error instanceof Error ? error.message : String(error) 
-      });
-      return false;
     }
+
+    Logger.warn('All Podman machine check attempts failed', { 
+      totalAttempts: maxRetries,
+      recommendation: 'Check if Podman machine is properly started with: podman machine list'
+    });
+    return false;
   }
 
   /**

@@ -80,25 +80,56 @@ export class DatabaseFactory {
     if (config.type === 'postgresql') {
       Logger.info('PostgreSQL configuration detected - checking if containers are available...');
       
+      const containerCheckStart = Date.now();
+      
       try {
         const containerManager = new ContainerManager();
         
         // Quick check if container engine is available at all
+        Logger.debug('Checking container engine availability...', { timestamp: new Date().toISOString() });
+        const engineCheckStart = Date.now();
         const engineAvailable = await containerManager.isContainerEngineAvailable();
+        const engineCheckDuration = Date.now() - engineCheckStart;
+        
+        Logger.debug('Container engine check completed', { 
+          available: engineAvailable,
+          duration: `${engineCheckDuration}ms`
+        });
+        
         if (!engineAvailable) {
           throw new Error(`Container engine not available - use start-containers script first`);
         }
         
         // Quick check if PostgreSQL container is running
+        Logger.debug('Checking PostgreSQL container status...', { timestamp: new Date().toISOString() });
+        const containerCheckStart = Date.now();
         const postgresStatus = await containerManager.getContainerStatus('baby-skynet-postgres');
+        const containerCheckDuration = Date.now() - containerCheckStart;
+        
+        Logger.debug('PostgreSQL container check completed', {
+          running: postgresStatus.running,
+          duration: `${containerCheckDuration}ms`,
+          status: postgresStatus
+        });
+        
         if (!postgresStatus.running) {
           throw new Error(`PostgreSQL container not running - use start-containers script first`);
         }
         
-        Logger.success('PostgreSQL container is available and running');
+        const totalCheckDuration = Date.now() - containerCheckStart;
+        Logger.success('PostgreSQL container is available and running', {
+          totalCheckDuration: `${totalCheckDuration}ms`,
+          engineCheckDuration: `${engineCheckDuration}ms`,
+          containerCheckDuration: `${containerCheckDuration}ms`
+        });
       } catch (containerError) {
+        const totalCheckDuration = Date.now() - containerCheckStart;
+        const errorMsg = containerError instanceof Error ? containerError.message : String(containerError);
+        
         Logger.warn('PostgreSQL containers not available, falling back to SQLite', { 
-          error: containerError instanceof Error ? containerError.message : String(containerError),
+          error: errorMsg,
+          checkDuration: `${totalCheckDuration}ms`,
+          timestamp: new Date().toISOString(),
           recommendation: 'Run start-containers script first for full functionality',
           instructions: 'Windows: start-containers.bat | macOS/Linux: ./start-containers-*.sh',
           fallbackMode: 'SQLite will be used until containers are started'
