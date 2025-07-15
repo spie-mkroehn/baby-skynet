@@ -242,17 +242,14 @@ export class ContainerManager {
   }
 
   /**
-   * Auto-start required containers for Baby-SkyNet using configuration
+   * Check status of Baby-SkyNet containers (containers are started externally via batch script)
+   * @deprecated This method now only checks status. Use external batch scripts to start containers.
    */
   async ensureBabySkyNetContainers(): Promise<{ started: string[], failed: string[], alreadyRunning: string[] }> {
-    Logger.separator('Container Management - Baby-SkyNet Services');
+    Logger.separator('Container Status Check - Baby-SkyNet Services');
 
     const config = ContainerConfigManager.getContainerConfig();
     ContainerConfigManager.validateConfig(config);
-    ContainerConfigManager.logConfig(config);
-
-    // Ensure data directories exist first
-    await ContainerConfigManager.ensureDataDirectories(config);
 
     // Get container definitions from config
     const containerDefs = ContainerConfigManager.getContainerDefinitions(config);
@@ -263,67 +260,43 @@ export class ContainerManager {
     ];
 
     const result = {
-      started: [] as string[],
-      failed: [] as string[],
-      alreadyRunning: [] as string[]
+      started: [] as string[],        // Not used anymore - containers started externally
+      failed: [] as string[],         // Containers that are missing or stopped
+      alreadyRunning: [] as string[]  // Containers that are running
     };
 
     // Check if container engine is available
     if (!await this.isContainerEngineAvailable()) {
-      Logger.error('Container engine not available', { engine: this.containerEngine });
+      Logger.warn('Container engine not available', { engine: this.containerEngine });
+      // Mark all as failed since we can't check their status
+      for (const containerConfig of requiredContainers) {
+        result.failed.push(containerConfig.name);
+      }
       return result;
     }
 
-    // Ensure Podman Machine is running (for podman engine only)
-    if (!await this.ensurePodmanMachineRunning()) {
-      Logger.error('Failed to start Podman machine - container operations will fail');
-      return result;
-    }
-
+    // Check status of each required container
     for (const containerConfig of requiredContainers) {
       const status = await this.getContainerStatus(containerConfig.name);
       
       if (status.running) {
-        Logger.info('Container already running', { name: containerConfig.name });
+        Logger.info('Container is running', { name: containerConfig.name });
         result.alreadyRunning.push(containerConfig.name);
-        continue;
-      }
-
-      if (status.exists && !status.running) {
-        // Container exists but not running, try to start it
-        try {
-          Logger.info('Starting existing container', { name: containerConfig.name });
-          await execAsync(`${this.containerEngine} start ${containerConfig.name}`);
-          result.started.push(containerConfig.name);
-          Logger.success('Existing container started', { name: containerConfig.name });
-          continue;
-        } catch (error) {
-          Logger.warn('Failed to start existing container, will recreate', { 
-            name: containerConfig.name, 
-            error: error instanceof Error ? error.message : String(error) 
-          });
-          // Remove the broken container
-          await this.removeContainer(containerConfig.name);
-        }
-      }
-
-      // Create and start new container
-      const started = await this.startContainer(containerConfig);
-      if (started) {
-        result.started.push(containerConfig.name);
       } else {
+        Logger.warn('Container is not running', { 
+          name: containerConfig.name, 
+          exists: status.exists,
+          status: status.exists ? 'stopped' : 'missing'
+        });
         result.failed.push(containerConfig.name);
       }
-
-      // Wait a bit between container starts
-      await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
-    Logger.separator('Container Management Complete');
-    Logger.info('Container management summary', {
-      alreadyRunning: result.alreadyRunning.length,
-      started: result.started.length,
-      failed: result.failed.length
+    Logger.separator('Container Status Check Complete');
+    Logger.info('Container status summary', {
+      running: result.alreadyRunning.length,
+      not_running: result.failed.length,
+      total_checked: requiredContainers.length
     });
 
     return result;
@@ -564,61 +537,5 @@ export class ContainerManager {
     
     Logger.success('All containers are ready and accepting connections');
     return true;
-  }
-
-  /**
-   * Ensure all required containers for Baby-SkyNet are running
-   * This is the main method that should be called during server startup
-   */
-  async ensureAllRequiredContainers(): Promise<void> {
-    Logger.separator('Container Dependencies Check');
-    Logger.info('Ensuring all required containers are available...');
-
-    try {
-      // Check if container engine is available
-      const isEngineAvailable = await this.isContainerEngineAvailable();
-      if (!isEngineAvailable) {
-        throw new Error(`Container engine ${this.containerEngine} is not available`);
-      }
-      Logger.success(`Container engine ${this.containerEngine} is available`);
-
-      // Ensure Podman machine is running (if using Podman)
-      const machineRunning = await this.ensurePodmanMachineRunning();
-      if (!machineRunning) {
-        throw new Error('Failed to start Podman machine');
-      }
-
-      // Ensure all Baby-SkyNet containers are running
-      Logger.info('Starting Baby-SkyNet container ecosystem...');
-      const containerResults = await this.ensureBabySkyNetContainers();
-      
-      // Log detailed container status
-      if (containerResults.alreadyRunning.length > 0) {
-        Logger.info('Containers already running', { containers: containerResults.alreadyRunning });
-      }
-      if (containerResults.started.length > 0) {
-        Logger.success('Containers started', { containers: containerResults.started });
-      }
-      if (containerResults.failed.length > 0) {
-        Logger.error('Containers failed to start', { containers: containerResults.failed });
-        throw new Error(`Failed to start containers: ${containerResults.failed.join(', ')}`);
-      }
-
-      // Wait for all containers to be ready and accepting connections
-      Logger.info('Waiting for containers to become ready...');
-      const allReady = await this.waitForAllContainersReady();
-      if (!allReady) {
-        throw new Error('One or more containers failed to become ready');
-      }
-
-      Logger.success('Container infrastructure ready');
-      Logger.separator('Container Dependencies Ready');
-
-    } catch (error) {
-      Logger.error('Failed to ensure required containers', { 
-        error: error instanceof Error ? error.message : String(error) 
-      });
-      throw error;
-    }
   }
 }

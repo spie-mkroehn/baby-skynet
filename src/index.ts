@@ -80,15 +80,15 @@ async function gracefulShutdown() {
 }
 
 /**
- * Baby SkyNet MCP Server v2.3
+ * Baby SkyNet MCP Server v1.0.0
  * Memory Management + Multi-Provider Semantic Analysis (Ollama + Anthropic)
  */
 
-// Load environment variables with explicit path (ES Module compatible)
+// Load environment variables with explicit path and UTF-8 encoding (ES Module compatible)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const envPath = path.join(__dirname, '../.env');
-dotenv.config({ path: envPath });
+dotenv.config({ path: envPath, encoding: 'utf8' });
 
 // Initialize version and logging FIRST (but silently for MCP)
 await Version.initialize();
@@ -106,60 +106,21 @@ if (process.env.DEBUG_BABY_SKYNET) {
 }
 
 // LLM Configuration
-const OLLAMA_BASE_URL = 'http://localhost:11434';
-const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
-let LLM_MODEL = 'llama3.1:latest'; // Default, wird von Args überschrieben
-let EMBEDDING_MODEL = 'openai'; // Default, wird von Args/Env überschrieben
+let OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+let ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
+let LLM_MODEL = process.env.BRAIN_MODEL || 'llama3.1:latest';
+let EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'openai';
 
 // Debug: Check if API key is loaded (only in debug mode)
 if (process.env.DEBUG_BABY_SKYNET) {
   Logger.debug('Environment check', { 
     envPath,
     hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
-    anthropicKeyPrefix: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 8) + '...' : 'MISSING'
+    anthropicKeyPrefix: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 8) + '...' : 'MISSING',
+    ollamaBaseUrl: OLLAMA_BASE_URL,
+    anthropicBaseUrl: ANTHROPIC_BASE_URL
   });
 }
-
-// Kommandozeilen-Parameter parsen
-function parseArgs(): { dbPath?: string; brainModel?: string; lancedbPath?: string } {
-  const args = (process.argv || []).slice(2);
-  const result: { dbPath?: string; brainModel?: string; lancedbPath?: string } = {};
-  
-  if (process.env.DEBUG_BABY_SKYNET) {
-    Logger.debug('Parsing command line arguments', { argsCount: args.length, args });
-  }
-  
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg) continue; // Skip undefined/null args
-    
-    if ((arg === '--db-path' || arg === '--dbpath') && i + 1 < args.length) {
-      result.dbPath = args[i + 1];
-      i++;
-    }
-    if (arg === '--brain-model' && i + 1 < args.length) {
-      result.brainModel = args[i + 1];
-      i++;
-    }
-    if (arg === '--lancedb-path' && i + 1 < args.length) {
-      result.lancedbPath = args[i + 1];
-      i++;
-    }
-  }
-  
-  if (process.env.DEBUG_BABY_SKYNET) {
-    Logger.info('Command line arguments parsed', { 
-      dbPath: result.dbPath,
-      brainModel: result.brainModel,
-      lancedbPath: result.lancedbPath
-    });
-  }
-  
-  return result;
-}
-
-// Args parsen und initialisieren
-const { dbPath, brainModel, lancedbPath } = parseArgs();
 
 // Global instances
 let memoryDb: any = null;  // Using any for compatibility with existing code
@@ -170,56 +131,22 @@ let analyzer: SemanticAnalyzer | null = null;
 
 // LLM Model und Provider konfigurieren
 Logger.separator('LLM Configuration');
-if (brainModel) {
-  LLM_MODEL = brainModel;
-  const provider = brainModel.startsWith('claude-') ? 'Anthropic' : 'Ollama';
-  Logger.info('LLM model configured from arguments', { 
-    model: LLM_MODEL, 
-    provider,
-    baseUrl: provider === 'Anthropic' ? ANTHROPIC_BASE_URL : OLLAMA_BASE_URL
-  });
-} else if (process.env.BRAIN_MODEL) {
-  LLM_MODEL = process.env.BRAIN_MODEL;
-  const provider = process.env.BRAIN_MODEL.startsWith('claude-') ? 'Anthropic' : 'Ollama';
-  Logger.info('LLM model configured from environment', { 
-    model: LLM_MODEL, 
-    provider,
-    baseUrl: provider === 'Anthropic' ? ANTHROPIC_BASE_URL : OLLAMA_BASE_URL
-  });
-} else {
-  Logger.info('Using default LLM model', { 
-    model: LLM_MODEL, 
-    provider: 'Ollama',
-    baseUrl: OLLAMA_BASE_URL
-  });
-}
+const provider = LLM_MODEL.startsWith('claude-') ? 'Anthropic' : 'Ollama';
+Logger.info('LLM model configured from environment', { 
+  model: LLM_MODEL, 
+  provider,
+  baseUrl: provider === 'Anthropic' ? ANTHROPIC_BASE_URL : OLLAMA_BASE_URL
+});
 
 // Embedding Model Configuration
 Logger.separator('Embedding Configuration');
-const embeddingModelArg = process.argv.find(arg => arg.startsWith('--embedding-model='))?.split('=')[1];
-if (embeddingModelArg) {
-  EMBEDDING_MODEL = embeddingModelArg;
-  const provider = embeddingModelArg === 'openai' ? 'OpenAI' : 'Ollama';
-  Logger.info('Embedding model configured from arguments', { 
-    model: EMBEDDING_MODEL, 
-    provider
-  });
-} else if (process.env.EMBEDDING_MODEL) {
-  EMBEDDING_MODEL = process.env.EMBEDDING_MODEL;
-  const provider = process.env.EMBEDDING_MODEL === 'openai' ? 'OpenAI' : 'Ollama';
-  Logger.info('Embedding model configured from environment', { 
-    model: EMBEDDING_MODEL, 
-    provider
-  });
-} else {
-  Logger.info('Using default embedding model', { 
-    model: EMBEDDING_MODEL, 
-    provider: 'OpenAI'
-  });
-}
+const embeddingProvider = EMBEDDING_MODEL === 'openai' ? 'OpenAI' : 'Ollama';
+Logger.info('Embedding model configured from environment', { 
+  model: EMBEDDING_MODEL, 
+  provider: embeddingProvider
+});
 
 Logger.separator('Database Initialization');
-// Database initialization will be done async later in main function
 Logger.info('Database initialization will be performed asynchronously');
 
 // ChromaDB initialisieren (async)
@@ -228,10 +155,8 @@ async function initializeChromaDB() {
     Logger.separator('ChromaDB Initialization');
     Logger.info('ChromaDB initialization starting...');
     
-    // Get collection name from ARGV or environment
-    const collectionName = (process.argv || [])
-      .find(arg => arg && arg.startsWith('--chroma-collection='))
-      ?.split('=')[1] || process.env.CHROMA_COLLECTION || 'claude-main';
+    // Get collection name from environment
+    const collectionName = process.env.CHROMA_COLLECTION || 'claude-main';
     
     Logger.info('Using ChromaDB collection', { collectionName });
     
@@ -342,8 +267,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['category'],
         },
       },      {
-        name: 'save_new_memory',
-        description: 'Eine neue Erinnerung speichern',
+        name: 'save_memory_sql',
+        description: 'Eine neue Erinnerung speichern, die ausschliesslich in der SQL Datenbank abgelegt wird.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -354,31 +279,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['category', 'topic', 'content'],
         },
       },
-      {
-        name: 'save_new_memory_advanced',
-        description: 'Erweiterte Memory-Speicherung mit semantischer Analyse und Bedeutsamkeits-Check',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            category: { type: 'string', description: 'Kategorie der Erinnerung (Hint für Analyse)' },
-            topic: { type: 'string', description: 'Kurzer, prägnanter Titel' },
-            content: { type: 'string', description: 'Detaillierter Inhalt' },
-          },
-          required: ['category', 'topic', 'content'],
-        },
-      },
-      {
-        name: 'search_memories',
-        description: 'Volltext-Suche über Erinnerungen',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Suchbegriff' },
-            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien' },
-          },
-          required: ['query'],
-        },
-      },
+      // {
+      //   name: 'save_new_memory_advanced',
+      //   description: 'Erweiterte Memory-Speicherung mit semantischer Analyse und Bedeutsamkeits-Check',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       category: { type: 'string', description: 'Kategorie der Erinnerung (Hint für Analyse)' },
+      //       topic: { type: 'string', description: 'Kurzer, prägnanter Titel' },
+      //       content: { type: 'string', description: 'Detaillierter Inhalt' },
+      //     },
+      //     required: ['category', 'topic', 'content'],
+      //   },
+      // },
+      // {
+      //   name: 'search_memories',
+      //   description: 'Volltext-Suche über Erinnerungen',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       query: { type: 'string', description: 'Suchbegriff' },
+      //       categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien' },
+      //     },
+      //     required: ['query'],
+      //   },
+      // },
       {
         name: 'get_recent_memories',
         description: 'Letzte N Erinnerungen abrufen',
@@ -393,8 +318,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: { type: 'object', properties: {} },
       },
       {
-        name: 'update_memory',
-        description: 'Bestehende Erinnerung editieren',
+        name: 'update_memory_sql',
+        description: 'Bestehende Erinnerung in SQL Datenbank editieren',
         inputSchema: {
           type: 'object',
           properties: {
@@ -407,8 +332,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: 'move_memory',
-        description: 'Erinnerung in andere Kategorie verschieben',
+        name: 'move_memory_sql',
+        description: 'Erinnerung in andere Kategorie in der SQL Datenbank verschieben',
         inputSchema: {
           type: 'object',
           properties: {
@@ -417,7 +342,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['id', 'new_category'],
         },
-      },      // === NEW OLLAMA TOOLS ===
+      },
       {
         name: 'test_llm_connection',
         description: 'Teste Verbindung zum LLM-Provider und prüfe Model-Verfügbarkeit',
@@ -453,18 +378,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['job_id'],
         },
       },
-      {
-        name: 'extract_and_analyze_concepts',
-        description: 'Vollständige Pipeline: Memory in semantische Konzepte aufbrechen und analysieren',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            memory_id: { type: 'number', description: 'ID der zu analysierenden Memory' },
-            timeout_ms: { type: 'number', description: 'Timeout in ms', default: 720000 },
-          },
-          required: ['memory_id'],
-        },
-      },
+      // {
+      //   name: 'extract_and_analyze_concepts',
+      //   description: 'Vollständige Pipeline: Memory in semantische Konzepte aufbrechen und analysieren',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       memory_id: { type: 'number', description: 'ID der zu analysierenden Memory' },
+      //       timeout_ms: { type: 'number', description: 'Timeout in ms', default: 720000 },
+      //     },
+      //     required: ['memory_id'],
+      //   },
+      // },
       {
         name: 'execute_special_directive',
         description: '🔐 Execute Special Directive - Verarbeitung proprietärer Systemanweisungen',
@@ -473,49 +398,49 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {},
         },
       },
-      {
-        name: 'test_chromadb',
-        description: '🎨 Test ChromaDB über Docker (localhost:8000)',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            action: { type: 'string', description: 'Test action: heartbeat, insert, search, or full', default: 'full' },
-            query: { type: 'string', description: 'Search query for testing', default: 'test' }
-          },
-        },
-      },
-      {
-        name: 'insert_chromadb',
-        description: '📝 Insert documents into ChromaDB with OpenAI embeddings',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            documents: { 
-              type: 'array', 
-              items: { type: 'string' },
-              description: 'Array of text documents to insert into ChromaDB' 
-            },
-            metadata: { 
-              type: 'object', 
-              description: 'Optional metadata to attach to all documents',
-              additionalProperties: true
-            }
-          },
-          required: ['documents']
-        },
-      },
-      {
-        name: 'search_memories_advanced',
-        description: 'Erweiterte hybride Suche in SQL Database und ChromaDB mit semantischer Ähnlichkeit',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Suchbegriff für semantische und Volltext-Suche' },
-            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
-          },
-          required: ['query'],
-        },
-      },
+      // {
+      //   name: 'test_chromadb',
+      //   description: '🎨 Test ChromaDB über Docker (localhost:8000)',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       action: { type: 'string', description: 'Test action: heartbeat, insert, search, or full', default: 'full' },
+      //       query: { type: 'string', description: 'Search query for testing', default: 'test' }
+      //     },
+      //   },
+      // },
+      // {
+      //   name: 'insert_chromadb',
+      //   description: '📝 Insert documents into ChromaDB with OpenAI embeddings',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       documents: { 
+      //         type: 'array', 
+      //         items: { type: 'string' },
+      //         description: 'Array of text documents to insert into ChromaDB' 
+      //       },
+      //       metadata: { 
+      //         type: 'object', 
+      //         description: 'Optional metadata to attach to all documents',
+      //         additionalProperties: true
+      //       }
+      //     },
+      //     required: ['documents']
+      //   },
+      // },
+      // {
+      //   name: 'search_memories_advanced',
+      //   description: 'Erweiterte hybride Suche in SQL Database und ChromaDB mit semantischer Ähnlichkeit',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       query: { type: 'string', description: 'Suchbegriff für semantische und Volltext-Suche' },
+      //       categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+      //     },
+      //     required: ['query'],
+      //   },
+      // },
       {
         name: 'search_memories_intelligent',
         description: 'Intelligente adaptive Suche mit optionalem Reranking - wechselt automatisch zu ChromaDB-only wenn SQL Database leer ist',
@@ -530,74 +455,74 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['query'],
         },
       },
+      // {
+      //   name: 'search_concepts_only',
+      //   description: 'Reine ChromaDB-Suche über semantische Konzepte (nützlich für explorative Suchen)',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       query: { type: 'string', description: 'Suchbegriff für semantische Konzept-Suche' },
+      //       categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+      //       limit: { type: 'number', description: 'Anzahl Ergebnisse (Standard: 20)', default: 20 },
+      //     },
+      //     required: ['query'],
+      //   },
+      // },
+      // {
+      //   name: 'retrieve_memory_advanced',
+      //   description: 'Erweiterte Memory-Abfrage mit verwandten Konzepten und Memories aus ChromaDB',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       memory_id: { type: 'number', description: 'ID der abzurufenden Memory' },
+      //     },
+      //     required: ['memory_id'],
+      //   },
+      // },
+      // {
+      //   name: 'search_memories_with_explanation',
+      //   description: 'Suche mit detaillierter Erklärung der verwendeten Suchstrategien',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       query: { type: 'string', description: 'Suchbegriff' },
+      //       categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+      //     },
+      //     required: ['query'],
+      //   },
+      // },
+      // {
+      //   name: 'search_memories_with_reranking',
+      //   description: 'Erweiterte Suche mit intelligenter Neugewichtung der Ergebnisse für bessere Relevanz',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       query: { type: 'string', description: 'Suchbegriff' },
+      //       categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+      //       rerank_strategy: { 
+      //         type: 'string', 
+      //         enum: ['hybrid', 'llm', 'text'], 
+      //         description: 'Reranking-Strategie: hybrid (empfohlen), llm (semantisch), text (textbasiert)',
+      //         default: 'hybrid'
+      //       },
+      //     },
+      //     required: ['query'],
+      //   },
+      // },
+      // {
+      //   name: 'search_memories_intelligent_with_reranking',
+      //   description: 'Intelligente adaptive Suche mit automatischer Reranking-Strategiewahl',
+      //   inputSchema: {
+      //     type: 'object',
+      //     properties: {
+      //       query: { type: 'string', description: 'Suchbegriff' },
+      //       categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
+      //     },
+      //     required: ['query'],
+      //   },
+      // },
       {
-        name: 'search_concepts_only',
-        description: 'Reine ChromaDB-Suche über semantische Konzepte (nützlich für explorative Suchen)',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Suchbegriff für semantische Konzept-Suche' },
-            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
-            limit: { type: 'number', description: 'Anzahl Ergebnisse (Standard: 20)', default: 20 },
-          },
-          required: ['query'],
-        },
-      },
-      {
-        name: 'retrieve_memory_advanced',
-        description: 'Erweiterte Memory-Abfrage mit verwandten Konzepten und Memories aus ChromaDB',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            memory_id: { type: 'number', description: 'ID der abzurufenden Memory' },
-          },
-          required: ['memory_id'],
-        },
-      },
-      {
-        name: 'search_memories_with_explanation',
-        description: 'Suche mit detaillierter Erklärung der verwendeten Suchstrategien',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Suchbegriff' },
-            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
-          },
-          required: ['query'],
-        },
-      },
-      {
-        name: 'search_memories_with_reranking',
-        description: 'Erweiterte Suche mit intelligenter Neugewichtung der Ergebnisse für bessere Relevanz',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Suchbegriff' },
-            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
-            rerank_strategy: { 
-              type: 'string', 
-              enum: ['hybrid', 'llm', 'text'], 
-              description: 'Reranking-Strategie: hybrid (empfohlen), llm (semantisch), text (textbasiert)',
-              default: 'hybrid'
-            },
-          },
-          required: ['query'],
-        },
-      },
-      {
-        name: 'search_memories_intelligent_with_reranking',
-        description: 'Intelligente adaptive Suche mit automatischer Reranking-Strategiewahl',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Suchbegriff' },
-            categories: { type: 'array', items: { type: 'string' }, description: 'Optional: Kategorien zum Filtern' },
-          },
-          required: ['query'],
-        },
-      },
-      {
-        name: 'save_memory_with_graph',
+        name: 'save_memory_full',
         description: 'Memory mit automatischer Graph-Integration speichern',
         inputSchema: {
           type: 'object',
@@ -636,7 +561,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: 'get_memory_graph_context',
+        name: 'get_graph_context_for_memory',
         description: 'Graph-Kontext und Beziehungen für eine spezifische Memory abrufen',
         inputSchema: {
           type: 'object',
@@ -681,81 +606,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
     case 'memory_status':
-      Logger.debug('Executing memory_status tool', { autostart: args?.autostart });
+      Logger.debug('Executing memory_status tool');
       
-      // Container Management
+      // Container Status Check (containers are managed externally)
       let containerStatus = '';
-      let containerActions = '';
+      const containerManager = new ContainerManager();
       
-      if (args?.autostart) {
-        Logger.info('Auto-start mode enabled - checking containers');
-        const containerManager = new ContainerManager();
-        
-        try {
-          // Use the central container management method
-          const containerResults = await containerManager.ensureBabySkyNetContainers();
-          
-          // Report what happened with containers
-          if (containerResults.alreadyRunning.length > 0) {
-            containerActions += `✅ Already running: ${containerResults.alreadyRunning.join(', ')}\n`;
-          }
-          if (containerResults.started.length > 0) {
-            containerActions += `🚀 Started: ${containerResults.started.join(', ')}\n`;
-          }
-          if (containerResults.failed.length > 0) {
-            containerActions += `❌ Failed to start: ${containerResults.failed.join(', ')}\n`;
-          }
-          
-          if (containerResults.failed.length === 0) {
-            containerActions += `✅ All required containers operational (PostgreSQL, ChromaDB, Neo4j)\n`;
-          }
-          
-          // Wait a moment for containers to fully start
-          Logger.info('Waiting for containers to fully initialize...');
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          
-          // After containers are started, attempt database upgrade
-          Logger.info('Checking for possible database upgrade...');
-          const currentDbType = DatabaseFactory.getCurrentDatabaseType();
-          containerActions += `📊 Current database: ${currentDbType}\n`;
-          
-          if (currentDbType === 'SQLite') {
-            Logger.info('Currently using SQLite - attempting PostgreSQL upgrade...');
-            const upgradeSuccess = await DatabaseFactory.attemptPostgreSQLUpgrade();
-            
-            if (upgradeSuccess) {
-              containerActions += `🔄 Successfully upgraded from SQLite to PostgreSQL!\n`;
-              containerActions += `🎉 Full database functionality now available\n`;
-              
-              // Update global memoryDb reference
-              memoryDb = DatabaseFactory.getCurrentInstance();
-              
-              // Re-initialize components that depend on the database
-              if (memoryDb) {
-                jobProcessor = new JobProcessor(memoryDb as any, LLM_MODEL);
-                analyzer = new SemanticAnalyzer(LLM_MODEL);
-                memoryDb.analyzer = analyzer;
-                
-                // Re-link external clients
-                await linkClientsToDatabase();
-                
-                Logger.success('All components updated with new PostgreSQL database');
-              }
-            } else {
-              containerActions += `ℹ️  Database upgrade not possible - continuing with SQLite\n`;
-            }
-          } else if (currentDbType === 'PostgreSQL') {
-            containerActions += `✅ Already using PostgreSQL - no upgrade needed\n`;
-          }
-          
-        } catch (error) {
-          containerActions = `❌ Container management failed: ${error}\n`;
-          Logger.error('Container management failed', { error });
-        }
-      } else {
-        // Just check container status without starting
-        const containerManager = new ContainerManager();
-        
+      try {
         // Check if container engine is available
         const engineAvailable = await containerManager.isContainerEngineAvailable();
         
@@ -775,7 +632,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
           
           if (containers.some(c => !c.running)) {
-            containerStatus += '\n💡 **Tip:** Use `memory_status` with autostart=true to automatically start containers\n';
+            containerStatus += '\n💡 **Tip:** Start containers using external batch script (start-containers.bat on Windows)\n';
           }
         } else {
           // Check if it's a podman machine issue
@@ -783,11 +640,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           
           if (!podmanMachineRunning && containerManager.getContainerEngine() === 'podman') {
             containerStatus = '\n🐳 **Container Status:** Podman machine not running\n';
-            containerStatus += '💡 **Tip:** Use `memory_status` with autostart=true to automatically start Podman machine and containers\n';
+            containerStatus += '💡 **Tip:** Start Podman machine first, then use external batch script to start containers\n';
           } else {
             containerStatus = '\n🐳 **Container Status:** Container engine not available\n';
           }
         }
+      } catch (error) {
+        containerStatus = `\n❌ Container status check failed: ${error}\n`;
+        Logger.error('Container status check failed', { error });
       }
       
       const dbStatus = memoryDb ? '✅ Connected' : '❌ Not Connected';
@@ -796,7 +656,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet - Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 LLM Integration: Waiting for DB\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available${containerStatus}\n${containerActions}`,
+            text: `📊 Baby SkyNet - Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Not Available\n🤖 LLM Integration: Waiting for DB\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available${containerStatus}`,
           }],
         };
       }
@@ -869,17 +729,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${Version.getVersionSync()} - Memory Status\n\n🗄️  SQL Database: ${dbStatusWithType}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen${containerStatus}\n${containerActions}`,
+            text: `📊 Baby SkyNet MCP Server v${Version.getVersionSync()} - Memory Status\n\n🗄️  SQL Database: ${dbStatusWithType}\n🧠 ChromaDB: ${chromaDBInfo}\n🕸️ Neo4j Graph: ${neo4jInfo}\n📁 Filesystem Access: Ready\n🧠 Memory Categories: ${categoryCount} active (${totalMemories} memories)\n🤖 LLM Integration: ${llmStatusText} (${LLM_MODEL})\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available\n\n💫 Standard Categories: faktenwissen, prozedurales_wissen, erlebnisse, bewusstsein, humor, zusammenarbeit, kernerinnerungen${containerStatus}`,
           }],
         };
       } catch (error) {
         return {
           content: [{
             type: 'text',
-            text: `📊 Baby SkyNet MCP Server v${Version.getVersionSync()} Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ❌ Error loading\n🕸️ Neo4j Graph: ❌ Error loading\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available${containerStatus}\n${containerActions}`,
+            text: `📊 Baby SkyNet MCP Server v${Version.getVersionSync()} Memory Status\n\n🗄️  SQL Database: ${dbStatus}\n🧠 ChromaDB: ❌ Error loading\n🕸️ Neo4j Graph: ❌ Error loading\n📁 Filesystem Access: Ready\n🧠 Memory Categories: Error loading (${error})\n🤖 LLM Integration: Unknown\n🔗 MCP Protocol: v2.3.0\n👥 Mike & Claude Partnership: Strong\n\n🚀 Tools: 14 available${containerStatus}`,
           }],
         };
       }
+
     case 'test_llm_connection':
       if (!jobProcessor) {
         return { content: [{ type: 'text', text: '❌ Job processor not initialized. Database connection required.' }] };
@@ -976,6 +837,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch (error) {
         return { content: [{ type: 'text', text: `❌ Status check failed: ${error}` }] };
       }
+
     case 'get_analysis_result':
       if (!memoryDb) {
         return { content: [{ type: 'text', text: '❌ Database not available.' }] };
@@ -1023,90 +885,89 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Result retrieval failed: ${error}` }] };
       }
 
-    case 'extract_and_analyze_concepts':
-      if (!memoryDb || !jobProcessor) {
-        return { content: [{ type: 'text', text: '❌ Database or job processor not available.' }] };
-      }
+    // case 'extract_and_analyze_concepts':
+    //   if (!memoryDb || !jobProcessor) {
+    //     return { content: [{ type: 'text', text: '❌ Database or job processor not available.' }] };
+    //   }
       
-      try {
-        const memoryId = args?.memory_id as number;
-        if (!memoryId) throw new Error('memory_id parameter is required');
+    //   try {
+    //     const memoryId = args?.memory_id as number;
+    //     if (!memoryId) throw new Error('memory_id parameter is required');
         
-        const memory = await memoryDb.getMemoryById(memoryId);
-        if (!memory) {
-          return { content: [{ type: 'text', text: `❌ Memory with ID ${memoryId} not found.` }] };
-        }
+    //     const memory = await memoryDb.getMemoryById(memoryId);
+    //     if (!memory) {
+    //       return { content: [{ type: 'text', text: `❌ Memory with ID ${memoryId} not found.` }] };
+    //     }
         
-        // Use the new pipeline method
-        const analyzer = new SemanticAnalyzer(LLM_MODEL);
-        const result = await analyzer.extractAndAnalyzeConcepts(memory);
+    //     // Use the new pipeline method
+    //     const analyzer = new SemanticAnalyzer(LLM_MODEL);
+    //     const result = await analyzer.extractAndAnalyzeConcepts(memory);
         
-        if (result.error) {
-          return { content: [{ type: 'text', text: `❌ Pipeline failed: ${result.error}` }] };
-        }
+    //     if (result.error) {
+    //       return { content: [{ type: 'text', text: `❌ Pipeline failed: ${result.error}` }] };
+    //     }
         
-        if (!result.semantic_concepts || result.semantic_concepts.length === 0) {
-          return { content: [{ type: 'text', text: `❌ No semantic concepts extracted from memory ${memoryId}` }] };
-        }
+    //     if (!result.semantic_concepts || result.semantic_concepts.length === 0) {
+    //       return { content: [{ type: 'text', text: `❌ No semantic concepts extracted from memory ${memoryId}` }] };
+    //     }
 
-        // ChromaDB Integration: Store concepts
-        let chromadbStatus = '';
-        if (chromaClient) {
-          try {
-            const storageResult = await chromaClient.storeConcepts(memory, result.semantic_concepts);
-            if (storageResult.success) {
-              chromadbStatus = `\n🎯 ChromaDB: Successfully stored ${storageResult.stored} concepts`;
-            } else {
-              chromadbStatus = `\n⚠️ ChromaDB: Partial storage (${storageResult.stored} stored, ${storageResult.errors.length} errors)`;
-            }
-          } catch (error) {
-            chromadbStatus = `\n❌ ChromaDB: Storage failed - ${error}`;
-          }
-        } else {
-          chromadbStatus = '\n📊 ChromaDB: Not available (initialization failed)';
-        }
+    //     // ChromaDB Integration: Store concepts
+    //     let chromadbStatus = '';
+    //     if (chromaClient) {
+    //       try {
+    //         const storageResult = await chromaClient.storeConcepts(memory, result.semantic_concepts);
+    //         if (storageResult.success) {
+    //           chromadbStatus = `\n🎯 ChromaDB: Successfully stored ${storageResult.stored} concepts`;
+    //         } else {
+    //           chromadbStatus = `\n⚠️ ChromaDB: Partial storage (${storageResult.stored} stored, ${storageResult.errors.length} errors)`;
+    //         }
+    //       } catch (error) {
+    //         chromadbStatus = `\n❌ ChromaDB: Storage failed - ${error}`;
+    //       }
+    //     } else {
+    //       chromadbStatus = '\n📊 ChromaDB: Not available (initialization failed)';
+    //     }
         
-        // Return both structured JSON and formatted display
-        const jsonOutput = JSON.stringify({
-          success: true,
-          original_memory: {
-            id: memoryId,
-            category: memory.category,
-            topic: memory.topic,
-            content: memory.content,
-            date: memory.date
-          },
-          semantic_concepts: result.semantic_concepts
-        }, null, 2);
+    //     // Return both structured JSON and formatted display
+    //     const jsonOutput = JSON.stringify({
+    //       success: true,
+    //       original_memory: {
+    //         id: memoryId,
+    //         category: memory.category,
+    //         topic: memory.topic,
+    //         content: memory.content,
+    //         date: memory.date
+    //       },
+    //       semantic_concepts: result.semantic_concepts
+    //     }, null, 2);
 
-        // Format the results for display
-        const conceptsText = result.semantic_concepts.map((concept, index) => {
-          const keywordsList = concept.keywords?.join(', ') || 'None';
-          const conceptsList = concept.extracted_concepts?.join(', ') || 'None';
+    //     // Format the results for display
+    //     const conceptsText = result.semantic_concepts.map((concept, index) => {
+    //       const keywordsList = concept.keywords?.join(', ') || 'None';
+    //       const conceptsList = concept.extracted_concepts?.join(', ') || 'None';
           
-          return `🧩 Concept ${index + 1}: ${concept.concept_title}\n` +
-                 `   📝 Description: ${concept.concept_description}\n` +
-                 `   🏷️ Type: ${concept.memory_type} (${(concept.confidence * 100).toFixed(1)}%)\n` +
-                 `   😊 Mood: ${concept.mood}\n` +
-                 `   🔑 Keywords: ${keywordsList}\n` +
-                 `   💡 Concepts: ${conceptsList}`;
-        }).join('\n\n---\n\n');
+    //       return `🧩 Concept ${index + 1}: ${concept.concept_title}\n` +
+    //              `   📝 Description: ${concept.concept_description}\n` +
+    //              `   🏷️ Type: ${concept.memory_type} (${(concept.confidence * 100).toFixed(1)}%)\n` +
+    //              `   😊 Mood: ${concept.mood}\n` +
+    //              `   🔑 Keywords: ${keywordsList}\n` +
+    //              `   💡 Concepts: ${conceptsList}`;
+    //     }).join('\n\n---\n\n');
 
-        return {
-          content: [{
-            type: 'text',
-            text: `🧠 Complete Semantic Analysis Pipeline (Memory ${memoryId})\n\n` +
-                  `📝 Original: ${memory.topic}\n` +
-                  `📂 Category: ${memory.category}${chromadbStatus}\n\n` +
-                  `🔍 Extracted ${result.semantic_concepts.length} Semantic Concepts:\n\n${conceptsText}\n\n` +
-                  `📋 Structured JSON Output:\n\n\`\`\`json\n${jsonOutput}\n\`\`\``
-          }]
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Pipeline analysis failed: ${error}` }] };
-      }
+    //     return {
+    //       content: [{
+    //         type: 'text',
+    //         text: `🧠 Complete Semantic Analysis Pipeline (Memory ${memoryId})\n\n` +
+    //               `📝 Original: ${memory.topic}\n` +
+    //               `📂 Category: ${memory.category}${chromadbStatus}\n\n` +
+    //               `🔍 Extracted ${result.semantic_concepts.length} Semantic Concepts:\n\n${conceptsText}\n\n` +
+    //               `📋 Structured JSON Output:\n\n\`\`\`json\n${jsonOutput}\n\`\`\``
+    //       }]
+    //     };
+    //   } catch (error) {
+    //     return { content: [{ type: 'text', text: `❌ Pipeline analysis failed: ${error}` }] };
+    //   }
 
-    // === EXISTING MEMORY TOOLS ===
     case 'recall_category':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
@@ -1126,7 +987,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen: ${error}` }] };
       }
 
-    case 'save_new_memory':
+    case 'save_memory_sql':
       Logger.info('Save new memory tool called', { 
         category: args?.category, 
         topic: typeof args?.topic === 'string' ? args.topic.substring(0, 50) + '...' : 'undefined',
@@ -1149,96 +1010,96 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Fehler beim Speichern: ${error}` }] };
       }
 
-    case 'save_new_memory_advanced':
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
-      if (!memoryDb.analyzer) return { content: [{ type: 'text', text: '❌ LLM Service not available.' }] };
+    // case 'save_new_memory_advanced':
+    //   if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+    //   if (!memoryDb.analyzer) return { content: [{ type: 'text', text: '❌ LLM Service not available.' }] };
       
-      try {
-        const category = args?.category as string;
-        const topic = args?.topic as string;
-        const content = args?.content as string;
-        if (!category || !topic || !content) throw new Error('Category, topic and content required');
+    //   try {
+    //     const category = args?.category as string;
+    //     const topic = args?.topic as string;
+    //     const content = args?.content as string;
+    //     if (!category || !topic || !content) throw new Error('Category, topic and content required');
         
-        const result = await memoryDb.saveNewMemoryAdvanced(category, topic, content);
+    //     const result = await memoryDb.saveNewMemoryAdvanced(category, topic, content);
         
-        if (result.error) {
-          return { content: [{ type: 'text', text: `❌ Pipeline Error: ${result.error}` }] };
-        }
+    //     if (result.error) {
+    //       return { content: [{ type: 'text', text: `❌ Pipeline Error: ${result.error}` }] };
+    //     }
         
-        const sqlStatus = result.stored_in_sqlite ? '✅ Core Memory (SQL)' : '⏭️ LanceDB only';
-        const lancedbStatus = result.stored_in_lancedb ? '✅ Semantic Search (LanceDB)' : '❌ LanceDB failed';
-        const shortMemoryStatus = result.stored_in_short_memory ? '✅ Short Memory (FIFO Queue)' : '❌ Short Memory failed';
+      //   const sqlStatus = result.stored_in_sqlite ? '✅ Core Memory (SQL)' : '⏭️ LanceDB only';
+      //   const lancedbStatus = result.stored_in_lancedb ? '✅ Semantic Search (LanceDB)' : '❌ LanceDB failed';
+      //   const shortMemoryStatus = result.stored_in_short_memory ? '✅ Short Memory (FIFO Queue)' : '❌ Short Memory failed';
         
-        return {
-          content: [{ type: 'text', text: `🚀 Advanced Memory Pipeline Complete!\n\n📂 Original Category: ${category}\n🧠 Analyzed Type: ${result.analyzed_category}\n🏷️ Topic: ${topic}\n🆔 Memory ID: ${result.memory_id}\n📅 Date: ${new Date().toISOString().split('T')[0]}\n\n💾 Storage Results:\n${sqlStatus}\n${lancedbStatus}\n${shortMemoryStatus}\n\n🤔 Significance: ${result.significance_reason}` }]
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Advanced Pipeline Error: ${error}` }] };
-      }
+      //   return {
+      //     content: [{ type: 'text', text: `🚀 Advanced Memory Pipeline Complete!\n\n📂 Original Category: ${category}\n🧠 Analyzed Type: ${result.analyzed_category}\n🏷️ Topic: ${topic}\n🆔 Memory ID: ${result.memory_id}\n📅 Date: ${new Date().toISOString().split('T')[0]}\n\n💾 Storage Results:\n${sqlStatus}\n${lancedbStatus}\n${shortMemoryStatus}\n\n🤔 Significance: ${result.significance_reason}` }]
+      //   };
+      // } catch (error) {
+      //   return { content: [{ type: 'text', text: `❌ Advanced Pipeline Error: ${error}` }] };
+      // }
 
-    case 'search_memories':
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+    // case 'search_memories':
+    //   if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
-      try {
-        const query = args?.query as string;
-        const categories = args?.categories as string[];
-        if (!query) throw new Error('Query parameter is required');
+    //   try {
+    //     const query = args?.query as string;
+    //     const categories = args?.categories as string[];
+    //     if (!query) throw new Error('Query parameter is required');
         
-        const memories = await memoryDb.searchMemories(query, categories);
-        if (memories.length === 0) {
-          return { content: [{ type: 'text', text: `🔍 Keine Erinnerungen für "${query}" gefunden.` }] };
-        }
+    //     const memories = await memoryDb.searchMemories(query, categories);
+    //     if (memories.length === 0) {
+    //       return { content: [{ type: 'text', text: `🔍 Keine Erinnerungen für "${query}" gefunden.` }] };
+    //     }
         
-        const memoryText = memories.map((memory: any) => `📅 ${memory.date} | 📂 ${memory.category} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
-        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
-        return { content: [{ type: 'text', text: `🔍 Suchergebnisse für "${query}"${categoryFilter} (${memories.length} gefunden):\n\n${memoryText}` }] };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler bei der Suche: ${error}` }] };
-      }
+    //     const memoryText = memories.map((memory: any) => `📅 ${memory.date} | 📂 ${memory.category} | 🏷️ ${memory.topic}\n${memory.content}\n`).join('\n---\n\n');
+    //     const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+    //     return { content: [{ type: 'text', text: `🔍 Suchergebnisse für "${query}"${categoryFilter} (${memories.length} gefunden):\n\n${memoryText}` }] };
+    //   } catch (error) {
+    //     return { content: [{ type: 'text', text: `❌ Fehler bei der Suche: ${error}` }] };
+    //   }
 
-    case 'search_memories_advanced':
-      Logger.info('Advanced search tool called', { 
-        query: typeof args?.query === 'string' ? args.query.substring(0, 50) + '...' : 'undefined',
-        categories: args?.categories,
-        hasCategories: !!(args?.categories && Array.isArray(args.categories))
-      });
+    // case 'search_memories_advanced':
+    //   Logger.info('Advanced search tool called', { 
+    //     query: typeof args?.query === 'string' ? args.query.substring(0, 50) + '...' : 'undefined',
+    //     categories: args?.categories,
+    //     hasCategories: !!(args?.categories && Array.isArray(args.categories))
+    //   });
       
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+    //   if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
-      try {
-        const query = args?.query as string;
-        const categories = args?.categories as string[];
-        if (!query) throw new Error('Query parameter is required');
+    //   try {
+    //     const query = args?.query as string;
+    //     const categories = args?.categories as string[];
+    //     if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchMemoriesAdvanced(query, categories);
-        if (!result.success) {
-          return { content: [{ type: 'text', text: `❌ Erweiterte Suche fehlgeschlagen: ${result.error}` }] };
-        }
+    //     const result = await memoryDb.searchMemoriesAdvanced(query, categories);
+    //     if (!result.success) {
+    //       return { content: [{ type: 'text', text: `❌ Erweiterte Suche fehlgeschlagen: ${result.error}` }] };
+    //     }
         
-        const totalResults = result.combined_results.length;
-        const sqlCount = result.sqlite_results.length;
-        const chromaCount = result.chroma_results.length;
+    //     const totalResults = result.combined_results.length;
+    //     const sqlCount = result.sqlite_results.length;
+    //     const chromaCount = result.chroma_results.length;
         
-        if (totalResults === 0) {
-          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n📊 Durchsuchte Quellen:\n• SQL Database: ${sqlCount} Treffer\n• ChromaDB: ${chromaCount} Treffer` }] };
-        }
+    //     if (totalResults === 0) {
+    //       return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n📊 Durchsuchte Quellen:\n• SQL Database: ${sqlCount} Treffer\n• ChromaDB: ${chromaCount} Treffer` }] };
+    //     }
         
-        const memoryText = result.combined_results.slice(0, 20).map((memory: any) => {
-          const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
-          const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
-          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category} | 🏷️ ${memory.topic}${relevanceScore}\n${memory.content}\n`;
-        }).join('\n---\n\n');
+    //     const memoryText = result.combined_results.slice(0, 20).map((memory: any) => {
+    //       const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
+    //       const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
+    //       return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category} | 🏷️ ${memory.topic}${relevanceScore}\n${memory.content}\n`;
+    //     }).join('\n---\n\n');
         
-        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
-        return { 
-          content: [{ 
-            type: 'text', 
-            text: `🚀 Erweiterte Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Statistik:\n• Gesamt: ${totalResults} Ergebnisse\n• SQL Database: ${sqlCount} Treffer\n• ChromaDB: ${chromaCount} semantische Treffer\n\n🎯 Top ${Math.min(20, totalResults)} Ergebnisse:\n\n${memoryText}` 
-          }] 
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler bei der erweiterten Suche: ${error}` }] };
-      }
+    //     const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+    //     return { 
+    //       content: [{ 
+    //         type: 'text', 
+    //         text: `🚀 Erweiterte Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Statistik:\n• Gesamt: ${totalResults} Ergebnisse\n• SQL Database: ${sqlCount} Treffer\n• ChromaDB: ${chromaCount} semantische Treffer\n\n🎯 Top ${Math.min(20, totalResults)} Ergebnisse:\n\n${memoryText}` 
+    //       }] 
+    //     };
+    //   } catch (error) {
+    //     return { content: [{ type: 'text', text: `❌ Fehler bei der erweiterten Suche: ${error}` }] };
+    //   }
 
     case 'search_memories_intelligent':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
@@ -1284,215 +1145,215 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Fehler bei der intelligenten Suche: ${error}` }] };
       }
 
-    case 'search_concepts_only':
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
-      if (!memoryDb.chromaClient) return { content: [{ type: 'text', text: '❌ ChromaDB not available.' }] };
+    // case 'search_concepts_only':
+    //   if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+    //   if (!memoryDb.chromaClient) return { content: [{ type: 'text', text: '❌ ChromaDB not available.' }] };
       
-      try {
-        const query = args?.query as string;
-        const categories = args?.categories as string[];
-        const limit = (args?.limit as number) || 20;
-        if (!query) throw new Error('Query parameter is required');
+    //   try {
+    //     const query = args?.query as string;
+    //     const categories = args?.categories as string[];
+    //     const limit = (args?.limit as number) || 20;
+    //     if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchConceptsOnly(query, categories, limit);
-        if (!result.success) {
-          return { content: [{ type: 'text', text: `❌ Konzept-Suche fehlgeschlagen: ${result.error}` }] };
-        }
+    //     const result = await memoryDb.searchConceptsOnly(query, categories, limit);
+    //     if (!result.success) {
+    //       return { content: [{ type: 'text', text: `❌ Konzept-Suche fehlgeschlagen: ${result.error}` }] };
+    //     }
         
-        if (result.results.length === 0) {
-          return { content: [{ type: 'text', text: `🧠 Keine semantischen Konzepte für "${query}" gefunden.` }] };
-        }
+    //     if (result.results.length === 0) {
+    //       return { content: [{ type: 'text', text: `🧠 Keine semantischen Konzepte für "${query}" gefunden.` }] };
+    //     }
         
-        const conceptText = result.results.map((concept: any) => {
-          const similarity = (concept.similarity * 100).toFixed(0);
-          const originalId = concept.original_memory_id ? ` [Original: ${concept.original_memory_id}]` : '';
-          return `🧠 ${concept.date} | 📂 ${concept.category} | Ähnlichkeit: ${similarity}%${originalId}\n🏷️ ${concept.topic}\n${concept.content}\n`;
-        }).join('\n---\n\n');
+    //     const conceptText = result.results.map((concept: any) => {
+    //       const similarity = (concept.similarity * 100).toFixed(0);
+    //       const originalId = concept.original_memory_id ? ` [Original: ${concept.original_memory_id}]` : '';
+    //       return `🧠 ${concept.date} | 📂 ${concept.category} | Ähnlichkeit: ${similarity}%${originalId}\n🏷️ ${concept.topic}\n${concept.content}\n`;
+    //     }).join('\n---\n\n');
         
-        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
-        return { 
-          content: [{ 
-            type: 'text', 
-            text: `🧠 Semantische Konzepte für "${query}"${categoryFilter}:\n\n📊 ${result.results.length} Konzepte gefunden (Limit: ${limit})\n\n🎯 Ergebnisse nach Ähnlichkeit sortiert:\n\n${conceptText}` 
-          }] 
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler bei der Konzept-Suche: ${error}` }] };
-      }
+    //     const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+    //     return { 
+    //       content: [{ 
+    //         type: 'text', 
+    //         text: `🧠 Semantische Konzepte für "${query}"${categoryFilter}:\n\n📊 ${result.results.length} Konzepte gefunden (Limit: ${limit})\n\n🎯 Ergebnisse nach Ähnlichkeit sortiert:\n\n${conceptText}` 
+    //       }] 
+    //     };
+    //   } catch (error) {
+    //     return { content: [{ type: 'text', text: `❌ Fehler bei der Konzept-Suche: ${error}` }] };
+    //   }
 
-    case 'retrieve_memory_advanced':
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+    // case 'retrieve_memory_advanced':
+    //   if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
-      try {
-        const memoryId = args?.memory_id as number;
-        if (!memoryId) throw new Error('Memory ID is required');
+    //   try {
+    //     const memoryId = args?.memory_id as number;
+    //     if (!memoryId) throw new Error('Memory ID is required');
         
-        const result = await memoryDb.retrieveMemoryAdvanced(memoryId);
-        if (!result.success) {
-          return { content: [{ type: 'text', text: `❌ Erweiterte Memory-Abfrage fehlgeschlagen: ${result.error}` }] };
-        }
+    //     const result = await memoryDb.retrieveMemoryAdvanced(memoryId);
+    //     if (!result.success) {
+    //       return { content: [{ type: 'text', text: `❌ Erweiterte Memory-Abfrage fehlgeschlagen: ${result.error}` }] };
+    //     }
         
-        const memory = result.sqlite_memory;
-        const relatedCount = result.related_memories.length;
-        const conceptCount = result.related_concepts.length;
+    //     const memory = result.sqlite_memory;
+    //     const relatedCount = result.related_memories.length;
+    //     const conceptCount = result.related_concepts.length;
         
-        let responseText = `📋 Memory Details (ID: ${memoryId}):\n\n`;
-        responseText += `📅 ${memory.date} | 📂 ${memory.category}\n🏷️ ${memory.topic}\n${memory.content}\n\n`;
+    //     let responseText = `📋 Memory Details (ID: ${memoryId}):\n\n`;
+    //     responseText += `📅 ${memory.date} | 📂 ${memory.category}\n🏷️ ${memory.topic}\n${memory.content}\n\n`;
         
-        if (conceptCount > 0) {
-          responseText += `🧠 Verwandte Konzepte (${conceptCount}):\n`;
-          result.related_concepts.slice(0, 5).forEach((concept: any) => {
-            const similarity = (concept.similarity * 100).toFixed(0);
-            responseText += `• ${concept.content.substring(0, 80)}... (${similarity}%)\n`;
-          });
-          responseText += '\n';
-        }
+    //     if (conceptCount > 0) {
+    //       responseText += `🧠 Verwandte Konzepte (${conceptCount}):\n`;
+    //       result.related_concepts.slice(0, 5).forEach((concept: any) => {
+    //         const similarity = (concept.similarity * 100).toFixed(0);
+    //         responseText += `• ${concept.content.substring(0, 80)}... (${similarity}%)\n`;
+    //       });
+    //       responseText += '\n';
+    //     }
         
-        if (relatedCount > 0) {
-          responseText += `🔗 Verwandte Memories (${relatedCount}):\n\n`;
-          result.related_memories.slice(0, 5).forEach((relMem: any) => {
-            const relevance = (relMem.relevance_score * 100).toFixed(0);
-            responseText += `📅 ${relMem.date} | 📂 ${relMem.category} | Relevanz: ${relevance}%\n🏷️ ${relMem.topic}\n${relMem.content.substring(0, 150)}...\n\n---\n\n`;
-          });
-        }
+    //     if (relatedCount > 0) {
+    //       responseText += `🔗 Verwandte Memories (${relatedCount}):\n\n`;
+    //       result.related_memories.slice(0, 5).forEach((relMem: any) => {
+    //         const relevance = (relMem.relevance_score * 100).toFixed(0);
+    //         responseText += `📅 ${relMem.date} | 📂 ${relMem.category} | Relevanz: ${relevance}%\n🏷️ ${relMem.topic}\n${relMem.content.substring(0, 150)}...\n\n---\n\n`;
+    //       });
+    //     }
         
-        if (conceptCount === 0 && relatedCount === 0) {
-          responseText += '🔍 Keine verwandten Konzepte oder Memories gefunden.';
-        }
+    //     if (conceptCount === 0 && relatedCount === 0) {
+    //       responseText += '🔍 Keine verwandten Konzepte oder Memories gefunden.';
+    //     }
         
-        return { content: [{ type: 'text', text: responseText }] };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler bei der erweiterten Memory-Abfrage: ${error}` }] };
-      }
+    //     return { content: [{ type: 'text', text: responseText }] };
+    //   } catch (error) {
+    //     return { content: [{ type: 'text', text: `❌ Fehler bei der erweiterten Memory-Abfrage: ${error}` }] };
+    //   }
 
-    case 'search_memories_with_explanation':
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+    // case 'search_memories_with_explanation':
+    //   if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
-      try {
-        const query = args?.query as string;
-        const categories = args?.categories as string[];
-        if (!query) throw new Error('Query parameter is required');
+    //   try {
+    //     const query = args?.query as string;
+    //     const categories = args?.categories as string[];
+    //     if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchMemoriesAdvanced(query, categories);
+    //     const result = await memoryDb.searchMemoriesAdvanced(query, categories);
         
-        const explanation = {
-          sql_strategy: "Full-text search in topic and content fields",
-          chroma_strategy: "Semantic vector similarity search using embeddings",
-          metadata_filters_applied: categories ? categories.length > 0 : false,
-          semantic_search_performed: memoryDb.chromaClient !== null
-        };
+    //     const explanation = {
+    //       sql_strategy: "Full-text search in topic and content fields",
+    //       chroma_strategy: "Semantic vector similarity search using embeddings",
+    //       metadata_filters_applied: categories ? categories.length > 0 : false,
+    //       semantic_search_performed: memoryDb.chromaClient !== null
+    //     };
 
-        if (categories && categories.length > 0) {
-          explanation.chroma_strategy += ` with metadata filtering on categories: [${categories.join(', ')}]`;
-        }
-        if (!result.success) {
-          return { content: [{ type: 'text', text: `❌ Erklärende Suche fehlgeschlagen: ${result.error}` }] };
-        }
+    //     if (categories && categories.length > 0) {
+    //       explanation.chroma_strategy += ` with metadata filtering on categories: [${categories.join(', ')}]`;
+    //     }
+    //     if (!result.success) {
+    //       return { content: [{ type: 'text', text: `❌ Erklärende Suche fehlgeschlagen: ${result.error}` }] };
+    //     }
         
-        const totalResults = result.combined_results.length;
+    //     const totalResults = result.combined_results.length;
         
-        let responseText = `🔬 Such-Analyse für "${query}":\n\n`;
-        responseText += `📊 Verwendete Strategien:\n`;
-        responseText += `• SQL Database: ${explanation.sql_strategy}\n`;
-        responseText += `• ChromaDB: ${explanation.chroma_strategy}\n`;
-        responseText += `• Metadaten-Filter: ${explanation.metadata_filters_applied ? '✅ Ja' : '❌ Nein'}\n`;
-        responseText += `• Semantische Suche: ${explanation.semantic_search_performed ? '✅ Aktiv' : '❌ Nicht verfügbar'}\n\n`;
+    //     let responseText = `🔬 Such-Analyse für "${query}":\n\n`;
+    //     responseText += `📊 Verwendete Strategien:\n`;
+    //     responseText += `• SQL Database: ${explanation.sql_strategy}\n`;
+    //     responseText += `• ChromaDB: ${explanation.chroma_strategy}\n`;
+    //     responseText += `• Metadaten-Filter: ${explanation.metadata_filters_applied ? '✅ Ja' : '❌ Nein'}\n`;
+    //     responseText += `• Semantische Suche: ${explanation.semantic_search_performed ? '✅ Aktiv' : '❌ Nicht verfügbar'}\n\n`;
         
-        if (totalResults > 0) {
-          responseText += `🎯 Ergebnisse (${totalResults} gefunden):\n\n`;
-          result.combined_results.slice(0, 10).forEach((memory: any) => {
-            const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
-            const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
-            responseText += `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${relevanceScore}\n🏷️ ${memory.topic}\n${memory.content.substring(0, 120)}...\n\n---\n\n`;
-          });
-        } else {
-          responseText += '🔍 Keine Ergebnisse gefunden.';
-        }
+    //     if (totalResults > 0) {
+    //       responseText += `🎯 Ergebnisse (${totalResults} gefunden):\n\n`;
+    //       result.combined_results.slice(0, 10).forEach((memory: any) => {
+    //         const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
+    //         const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
+    //         responseText += `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${relevanceScore}\n🏷️ ${memory.topic}\n${memory.content.substring(0, 120)}...\n\n---\n\n`;
+    //       });
+    //     } else {
+    //       responseText += '🔍 Keine Ergebnisse gefunden.';
+    //     }
         
-        return { content: [{ type: 'text', text: responseText }] };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler bei der erklärenden Suche: ${error}` }] };
-      }
+    //     return { content: [{ type: 'text', text: responseText }] };
+    //   } catch (error) {
+    //     return { content: [{ type: 'text', text: `❌ Fehler bei der erklärenden Suche: ${error}` }] };
+    //   }
 
-    case 'search_memories_with_reranking':
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+    // case 'search_memories_with_reranking':
+    //   if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
-      try {
-        const query = args?.query as string;
-        const categories = args?.categories as string[];
-        const rerankStrategy = (args?.rerank_strategy as 'hybrid' | 'llm' | 'text') || 'hybrid';
-        if (!query) throw new Error('Query parameter is required');
+    //   try {
+    //     const query = args?.query as string;
+    //     const categories = args?.categories as string[];
+    //     const rerankStrategy = (args?.rerank_strategy as 'hybrid' | 'llm' | 'text') || 'hybrid';
+    //     if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchMemoriesWithReranking(query, categories, rerankStrategy);
-        if (!result.success) {
-          return { content: [{ type: 'text', text: `❌ Reranking-Suche fehlgeschlagen: ${result.error}` }] };
-        }
+    //     const result = await memoryDb.searchMemoriesWithReranking(query, categories, rerankStrategy);
+    //     if (!result.success) {
+    //       return { content: [{ type: 'text', text: `❌ Reranking-Suche fehlgeschlagen: ${result.error}` }] };
+    //     }
         
-        const totalResults = result.reranked_results.length;
+    //     const totalResults = result.reranked_results.length;
         
-        if (totalResults === 0) {
-          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.` }] };
-        }
+    //     if (totalResults === 0) {
+    //       return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.` }] };
+    //     }
         
-        const memoryText = result.reranked_results.slice(0, 15).map((memory: any) => {
-          const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
-          const rerankScore = memory.rerank_score ? ` (⚡${(memory.rerank_score * 100).toFixed(0)}%)` : '';
-          const details = memory.rerank_details ? ` [${Object.entries(memory.rerank_details).map(([k,v]) => `${k}:${typeof v === 'number' ? (v * 100).toFixed(0) + '%' : v}`).join(', ')}]` : '';
-          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${rerankScore}\n🏷️ ${memory.topic}\n${memory.content}\n📊 ${details}\n`;
-        }).join('\n---\n\n');
+    //     const memoryText = result.reranked_results.slice(0, 15).map((memory: any) => {
+    //       const sourceIcon = memory.source === 'sqlite' ? '💾' : '🧠';
+    //       const rerankScore = memory.rerank_score ? ` (⚡${(memory.rerank_score * 100).toFixed(0)}%)` : '';
+    //       const details = memory.rerank_details ? ` [${Object.entries(memory.rerank_details).map(([k,v]) => `${k}:${typeof v === 'number' ? (v * 100).toFixed(0) + '%' : v}`).join(', ')}]` : '';
+    //       return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${rerankScore}\n🏷️ ${memory.topic}\n${memory.content}\n📊 ${details}\n`;
+    //     }).join('\n---\n\n');
         
-        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
-        return { 
-          content: [{ 
-            type: 'text', 
-            text: `🎯 Reranked Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${result.rerank_strategy}\n📈 Ergebnisse: ${totalResults} neugewichtet\n\n🏆 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
-          }] 
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler bei der Reranking-Suche: ${error}` }] };
-      }
+    //     const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+    //     return { 
+    //       content: [{ 
+    //         type: 'text', 
+    //         text: `🎯 Reranked Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${result.rerank_strategy}\n📈 Ergebnisse: ${totalResults} neugewichtet\n\n🏆 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
+    //       }] 
+    //     };
+    //   } catch (error) {
+    //     return { content: [{ type: 'text', text: `❌ Fehler bei der Reranking-Suche: ${error}` }] };
+    //   }
 
-    case 'search_memories_intelligent_with_reranking':
-      if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
+    // case 'search_memories_intelligent_with_reranking':
+    //   if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
-      try {
-        const query = args?.query as string;
-        const categories = args?.categories as string[];
-        if (!query) throw new Error('Query parameter is required');
+    //   try {
+    //     const query = args?.query as string;
+    //     const categories = args?.categories as string[];
+    //     if (!query) throw new Error('Query parameter is required');
         
-        const result = await memoryDb.searchMemoriesIntelligentWithReranking(query, categories);
-        if (!result.success) {
-          return { content: [{ type: 'text', text: `❌ Intelligente Reranking-Suche fehlgeschlagen: ${result.error}` }] };
-        }
+    //     const result = await memoryDb.searchMemoriesIntelligentWithReranking(query, categories);
+    //     if (!result.success) {
+    //       return { content: [{ type: 'text', text: `❌ Intelligente Reranking-Suche fehlgeschlagen: ${result.error}` }] };
+    //     }
         
-        const strategyIcon = result.search_strategy === 'hybrid' ? '🔄' : '🧠';
-        const rerankIcon = result.rerank_strategy === 'llm' ? '🤖' : result.rerank_strategy === 'text' ? '📝' : '⚖️';
+    //     const strategyIcon = result.search_strategy === 'hybrid' ? '🔄' : '🧠';
+    //     const rerankIcon = result.rerank_strategy === 'llm' ? '🤖' : result.rerank_strategy === 'text' ? '📝' : '⚖️';
         
-        const totalResults = result.reranked_results.length;
+    //     const totalResults = result.reranked_results.length;
         
-        if (totalResults === 0) {
-          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Such-Strategie: ${strategyIcon} ${result.search_strategy}\n⚡ Rerank-Strategie: ${rerankIcon} ${result.rerank_strategy}` }] };
-        }
+    //     if (totalResults === 0) {
+    //       return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Such-Strategie: ${strategyIcon} ${result.search_strategy}\n⚡ Rerank-Strategie: ${rerankIcon} ${result.rerank_strategy}` }] };
+    //     }
         
-        const memoryText = result.reranked_results.slice(0, 12).map((memory: any) => {
-          const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🔗';
-          const rerankScore = memory.rerank_score ? ` (⚡${(memory.rerank_score * 100).toFixed(0)}%)` : '';
-          const isReconstruction = memory.is_concept_reconstruction ? ' [Rekonstruiert]' : '';
-          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${rerankScore}${isReconstruction}\n🏷️ ${memory.topic}\n${memory.content}\n`;
-        }).join('\n---\n\n');
+    //     const memoryText = result.reranked_results.slice(0, 12).map((memory: any) => {
+    //       const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🔗';
+    //       const rerankScore = memory.rerank_score ? ` (⚡${(memory.rerank_score * 100).toFixed(0)}%)` : '';
+    //       const isReconstruction = memory.is_concept_reconstruction ? ' [Rekonstruiert]' : '';
+    //       return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category}${rerankScore}${isReconstruction}\n🏷️ ${memory.topic}\n${memory.content}\n`;
+    //     }).join('\n---\n\n');
         
-        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
-        return { 
-          content: [{ 
-            type: 'text', 
-            text: `🤖 Intelligente Reranked Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Such-Strategie: ${strategyIcon} ${result.search_strategy}\n⚡ Rerank-Strategie: ${rerankIcon} ${result.rerank_strategy}\n📈 Ergebnisse: ${totalResults} optimiert\n\n🏆 Top ${Math.min(12, totalResults)} Ergebnisse:\n\n${memoryText}` 
-          }] 
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler bei der intelligenten Reranking-Suche: ${error}` }] };
-      }
+    //     const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
+    //     return { 
+    //       content: [{ 
+    //         type: 'text', 
+    //         text: `🤖 Intelligente Reranked Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Such-Strategie: ${strategyIcon} ${result.search_strategy}\n⚡ Rerank-Strategie: ${rerankIcon} ${result.rerank_strategy}\n📈 Ergebnisse: ${totalResults} optimiert\n\n🏆 Top ${Math.min(12, totalResults)} Ergebnisse:\n\n${memoryText}` 
+    //       }] 
+    //     };
+    //   } catch (error) {
+    //     return { content: [{ type: 'text', text: `❌ Fehler bei der intelligenten Reranking-Suche: ${error}` }] };
+    //   }
 
-    case 'save_memory_with_graph':
+    case 'save_memory_full':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
@@ -1635,7 +1496,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Fehler bei der Graph-Suche: ${error}` }] };
       }
 
-    case 'get_memory_graph_context':
+    case 'get_graph_context_for_memory':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
@@ -1765,7 +1626,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Fehler beim Abrufen der neuesten Erinnerungen: ${error}` }] };
       }
 
-    case 'update_memory':
+    case 'update_memory_sql':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
@@ -1803,7 +1664,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `❌ Fehler beim Aktualisieren der Memory: ${error}` }] };
       }
 
-    case 'move_memory':
+    case 'move_memory_sql':
       if (!memoryDb) return { content: [{ type: 'text', text: '❌ Database not connected.' }] };
       
       try {
@@ -1826,7 +1687,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { 
           content: [{ 
             type: 'text', 
-            text: `✅ Memory ${id} successfully moved!\n\n📂 ${originalCategory} → ${new_category}\n🏷️ ${existingMemory.topic}\n📅 ${existingMemory.date}\n\n💡 Note: This only updates the core SQL database. For full ChromaDB/Neo4j sync, consider using save_memory_with_graph for new memories.` 
+            text: `✅ Memory ${id} successfully moved!\n\n📂 ${originalCategory} → ${new_category}\n🏷️ ${existingMemory.topic}\n📅 ${existingMemory.date}\n\n💡 Note: This only updates the core SQL database. For full ChromaDB/Neo4j sync, consider using save_memory_full for new memories.` 
           }] 
         };
       } catch (error) {

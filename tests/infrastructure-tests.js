@@ -122,24 +122,27 @@ class InfrastructureTests {
     
     logTest(`Initial container status: ${JSON.stringify(initialStatus, null, 2)}`);
     
-    // Test container start
-    logTest('Starting containers...');
-    await this.containerManager.ensureBabySkyNetContainers();
+    // Test container status check (containers should be started externally)
+    logTest('Checking container status...');
+    const statusResult = await this.containerManager.ensureBabySkyNetContainers();
     
-    // Wait for services to initialize
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    logTest(`Status check result: ${JSON.stringify(statusResult, null, 2)}`);
     
-    // Check status after start
+    // Verify status check returns proper structure
+    if (!statusResult || typeof statusResult !== 'object') {
+      throw new Error('Container status check should return an object with started, failed, alreadyRunning arrays');
+    }
+    
+    if (!Array.isArray(statusResult.alreadyRunning) || !Array.isArray(statusResult.failed)) {
+      throw new Error('Status result should contain alreadyRunning and failed arrays');
+    }
+    
+    // Check status after status check
     const runningStatus = await this.containerManager.getContainerStatus('baby-skynet-chromadb');
     logTest(`Running status: ${JSON.stringify(runningStatus, null, 2)}`);
     
-    // Verify at least one service is running (may depend on system availability)
-    // ContainerStatus has 'running' property, not 'status'
-    const hasRunningServices = runningStatus.running;
-    
-    if (!hasRunningServices) {
-      logWarning('No containers are running - this may be expected if Docker/Podman is not available');
-    }
+    // Note: We don't require services to be running since they're started externally
+    logTest('Container status check completed (containers managed externally)');
   }
 
   async testChromaDBHealth() {

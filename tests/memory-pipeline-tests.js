@@ -93,16 +93,17 @@ class MemoryPipelineTests {
   async setupContainers() {
     try {
       this.containerManager = new ContainerManager();
-      logTest('Starting container services...');
-      await this.containerManager.ensureBabySkyNetContainers();
+      logTest('Checking container status (containers managed externally)...');
+      const statusResult = await this.containerManager.ensureBabySkyNetContainers();
       
-      // Wait for services to initialize
-      logTest('Waiting for services to be ready...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      logTest(`Container status: Running: ${statusResult.alreadyRunning.length}, Not running: ${statusResult.failed.length}`);
+      
+      // Note: We don't start containers anymore, just check status
+      logTest('Container status check completed');
       
       return true;
     } catch (error) {
-      logWarning(`Container setup failed: ${error.message}`);
+      logWarning(`Container status check failed: ${error.message}`);
       return false;
     }
   }

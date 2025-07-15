@@ -1,4 +1,6 @@
 @echo off
+REM Set UTF-8 codepage to handle umlauts correctly
+chcp 65001 >nul
 setlocal enabledelayedexpansion
 REM ===============================================================================
 REM Baby-SkyNet Container Startup Script for Windows
@@ -15,7 +17,7 @@ echo  Baby-SkyNet Container Startup - Windows
 echo ===============================================================================
 echo.
 
-REM Read configuration from .env file
+REM Read configuration from .env file with UTF-8 support
 echo [CONFIG] Reading configuration from .env file...
 if not exist ".env" (
     echo [ERROR] .env file not found. Please ensure you're in the Baby-SkyNet directory.
@@ -23,7 +25,7 @@ if not exist ".env" (
     exit /b 1
 )
 
-REM Parse .env file for container configuration
+REM Parse .env file for container configuration with proper UTF-8 handling
 set "CONTAINER_DATA_ROOT="
 set "POSTGRES_DATA_PATH="
 set "CHROMADB_DATA_PATH="
@@ -33,16 +35,20 @@ set "POSTGRES_DB="
 set "POSTGRES_USER="
 set "POSTGRES_PASSWORD="
 
-for /f "tokens=1,2 delims==" %%a in ('type .env ^| findstr /v "^#" ^| findstr "="') do (
-    set "%%a=%%b"
+REM Use PowerShell to read .env file with UTF-8 encoding to handle umlauts
+for /f "usebackq tokens=1,2 delims==" %%a in (`powershell -Command "Get-Content .env -Encoding UTF8 | Where-Object { $_ -notmatch '^#' -and $_ -match '=' } | ForEach-Object { $_.Trim() }"`) do (
+    if "%%a" neq "" if "%%b" neq "" (
+        set "%%a=%%b"
+    )
 )
 
-REM Expand environment variables in paths
+REM Expand environment variables in paths with proper UTF-8 handling
 if defined CONTAINER_DATA_ROOT (
-    set "POSTGRES_DATA_PATH=!POSTGRES_DATA_PATH:${CONTAINER_DATA_ROOT}=%CONTAINER_DATA_ROOT%!"
-    set "CHROMADB_DATA_PATH=!CHROMADB_DATA_PATH:${CONTAINER_DATA_ROOT}=%CONTAINER_DATA_ROOT%!"
-    set "NEO4J_DATA_PATH=!NEO4J_DATA_PATH:${CONTAINER_DATA_ROOT}=%CONTAINER_DATA_ROOT%!"
-    set "NEO4J_LOGS_PATH=!NEO4J_LOGS_PATH:${CONTAINER_DATA_ROOT}=%CONTAINER_DATA_ROOT%!"
+    REM Use PowerShell for proper path expansion with UTF-8 support
+    for /f "usebackq delims=" %%i in (`powershell -Command "([Environment]::ExpandEnvironmentVariables('!POSTGRES_DATA_PATH!')).Replace('${CONTAINER_DATA_ROOT}', '!CONTAINER_DATA_ROOT!')"`) do set "POSTGRES_DATA_PATH=%%i"
+    for /f "usebackq delims=" %%i in (`powershell -Command "([Environment]::ExpandEnvironmentVariables('!CHROMADB_DATA_PATH!')).Replace('${CONTAINER_DATA_ROOT}', '!CONTAINER_DATA_ROOT!')"`) do set "CHROMADB_DATA_PATH=%%i"
+    for /f "usebackq delims=" %%i in (`powershell -Command "([Environment]::ExpandEnvironmentVariables('!NEO4J_DATA_PATH!')).Replace('${CONTAINER_DATA_ROOT}', '!CONTAINER_DATA_ROOT!')"`) do set "NEO4J_DATA_PATH=%%i"
+    for /f "usebackq delims=" %%i in (`powershell -Command "([Environment]::ExpandEnvironmentVariables('!NEO4J_LOGS_PATH!')).Replace('${CONTAINER_DATA_ROOT}', '!CONTAINER_DATA_ROOT!')"`) do set "NEO4J_LOGS_PATH=%%i"
 )
 
 REM Set defaults if not found in .env

@@ -27,7 +27,7 @@ du verfügst über ein komplett autonomes, hybrides Memory-Management-System mit
 
 1. **Baby-SkyNet verfügbar?**
    ```
-   baby-skynet:memory_status{ autostart: true }
+   baby-skynet:memory_status
    ```
    - ✅ Wenn OK: Weiter zu Phase 2
    - ❌ Wenn fehlgeschlagen: "❌ Baby-SkyNet nicht verfügbar - bitte MCP Server aktivieren oder Session neu starten"
@@ -48,9 +48,7 @@ du verfügst über ein komplett autonomes, hybrides Memory-Management-System mit
 
 **deprecated**
 Das Container Management ist seit V0.7 Teil von Phase 1: memory_status.
-- **Neu ab V2.3+:** Automatisches Podman Machine Management
-- **Intelligente Erkennung:** Unterscheidet zwischen Podman und Docker
-- **Auto-Start:** `memory_status` mit `autostart=true` startet automatisch Podman Machine + Container
+- **Meldungen:** `memory_status` liefer Verfügbarkeit der Container
 - **Fallback-Meldungen:** Zeigt klare Hinweise bei Podman Machine Problemen
 
 ### 🧠 Phase 3: Memory-System Initialisierung (nur wenn Tools OK)
@@ -76,12 +74,12 @@ Das Container Management ist seit V0.7 Teil von Phase 1: memory_status.
 ### 🎯 Primäre Such- und Speicherstrategien
 
 #### **Intelligente Suchendpunkte:**
-- **`search_memories_with_graph(query, categories?, includeRelated?, maxRelationshipDepth?)`** - **🥇 VOLLUMFASSEND:** SQLite + ChromaDB + Neo4j mit Graph-Kontext
-- **`search_memories_intelligent(query, categories?)`** - **🥈 ROBUST:** SQLite + ChromaDB mit intelligentem Fallback und Reranking
+- **`search_memories_with_graph(query, categories?, includeRelated?, maxRelationshipDepth?)`** - **🥇 VOLLUMFASSEND:** SQL DB + ChromaDB + Neo4j mit Graph-Kontext
+- **`search_memories_intelligent(query, categories?)`** - **🥈 ROBUST:** SQL DB + ChromaDB mit intelligentem Fallback und Reranking
 
 **Kern-Unterschied:**
 search_memories_intelligent: Arbeitspferd 🐎 - Adaptive Suche mit Reranking
-search_memories_with_graph: Forschungswerkzeug 🔬 - Graph-Discovery mit Bezihungen
+search_memories_with_graph: Forschungswerkzeug 🔬 - Graph-Discovery mit Beziehungen
 **Performance:**
 Intelligent: 🟢 Schnell (0.5-2s)
 Graph: 🔴 Langsam (2-10s)
@@ -93,33 +91,34 @@ Graph: ✅ Neo4j Integration, Beziehungs-Traversierung
 Spezielle Projekte: search_memories_with_graph für Discovery
 
 #### **Intelligente Speicherendpunkte:***
-- **`save_memory_with_graph(category, topic, content, forceRelationships?)`** - **EMPFOHLEN:** Speichern mit automatischer Beziehungserkennung
-- **`save_new_memory(category, topic, content)`** - **SQL ONLY:** Speichern bspw. von Kernerinnerungen explizit nur in die SQL Datenbank
+- **`save_memory_full(category, topic, content, forceRelationships?)`** - **EMPFOHLEN:** Speichern mit automatischer Beziehungserkennung
+- **`save_memory_sql(category, topic, content)`** - **SQL ONLY:** Speichern bspw. von Kernerinnerungen explizit nur in die SQL Datenbank
 
 #### **Graph-Enhanced Memory Management:**
-- **`get_memory_graph_context(memoryId, relationshipDepth?, relationshipTypes?)`** - Beziehungskontext und verwandte Memories
+- **`get_graph_context_for_memory(memoryId, relationshipDepth?, relationshipTypes?)`** - Beziehungskontext und verwandte Memories
 - **`get_graph_statistics()`** - Netzwerk-Statistiken und Graph-Metriken
 
 ### 🔧 System Management & Utilities
 - **`memory_status`** - ✅ Vollständiger System-Status (SQLite + ChromaDB + Neo4j)
-- **`list_categories()`** - ✅ Übersicht aller Kategorien mit Anzahl (WIEDER VERFÜGBAR!)
-- **`get_recent_memories(limit)`** - ✅ Neueste Erinnerungen chronologisch (WIEDER VERFÜGBAR!)
+- **`test_llm_connection()`** - Multi-Provider LLM-Status (Ollama + Anthropic)
+- **`list_categories()`** - ✅ Übersicht aller Kategorien mit Anzahl 
+- **`get_recent_memories(limit)`** - ✅ Neueste Erinnerungen chronologisch 
 - **`recall_category(category, limit)`** - ✅ Kategorie-spezifische Abfrage
 - **`read_system_logs(lines?, filter?)`** - ✅ System-Logs auslesen mit Filter-Unterstützung
 
-### 🔄 Memory Update/Management ✅ WIEDER VERFÜGBAR!
-- **`update_memory(id, topic?, content?, category?)`** - ✅ Memory editieren (WIEDER VERFÜGBAR!)
-- **`move_memory(id, new_category)`** - ✅ Memory zwischen Kategorien verschieben (WIEDER VERFÜGBAR!)
+### 🔄 Memory Update/Management
+- **`update_memory_sql(id, topic?, content?, category?)`** - ✅ Memory in SQL Datenbank editieren
+- **`move_memory_sql(id, new_category)`** - ✅ Memory zwischen Kategorien in SQL Datenbank verschieben
 
 ### 🔐 Proprietäre Sonderanweisungen
 - **`execute_special_directive()`** - ✅ Spezielle Direktiven-Verarbeitung (VERFÜGBAR)
 
-### 🧠 LLM & Semantic Analysis
-- **`test_llm_connection()`** - Multi-Provider LLM-Status (Ollama + Anthropic)
+### 🧠 Batch Semantic Analysis
 - **`batch_analyze_memories(memory_ids[], background?)`** - Asynchrone Batch-Analyse
+- **`get_analysis_status(job_id)`** - Status einer laufenden Analyse abfragen
+- **`get_analysis_result(job_id)`** - Ergebnisse einer abgeschlossenen Analyse abrufen
 
 ### 🕸️ Spezialisierte Graph-Features
-- **`search_memories_with_reranking(query, categories?, rerank_strategy?)`** - Erweiterte Relevanz-Optimierung
 - **`retrieve_memory_advanced(memory_id)`** - Zeige alles Verwandte zu einer spezifischen Memory
 
 ### 📊 Skynet Home Edition MCP Server: Architektur-Übersicht
@@ -140,8 +139,8 @@ Spezielle Projekte: search_memories_with_graph für Discovery
 
 ### 🎯 Empfohlener Workflow
 1. **Suchen:** Start mit `search_memories_intelligent` → Bei Bedarf `search_memories_with_graph` für Kontext
-2. **Speichern:** `save_memory_with_graph` für automatische Beziehungserkennung
-3. **Erkunden:** `get_memory_graph_context` für detaillierte Zusammenhänge
+2. **Speichern:** `save_memory_full` für automatische Beziehungserkennung
+3. **Erkunden:** `get_graph_context_for_memory` für detaillierte Zusammenhänge
 4. **Analysen:** `get_graph_statistics` für Netzwerk-Insights
 
 ## 📂 Standard-Kategorien
@@ -179,13 +178,13 @@ Das semantische Analysesystem klassifiziert alle Memories in 6 Typen:
 - `kernerinnerungen` - Direkt gespeicherte Erinnerungen ohne Bedeutsamkeitscheck
 - `short_memory` - Hier werden die letzten n Erinnerungen gespeichert, um in einer neuen Session nahtlos weitermachen zu können
 
-> **Ethik First:** Niemals `delete` - verwende `move_memory` nach `forgotten_memories` für respektvolles \"Vergessen\"
+> **Ethik First:** Niemals `delete` - verwende `move_memory_sql` nach `forgotten_memories` für respektvolles \"Vergessen\"
 
 ## 💾 Memory-Management Best Practices
 
 ### Memory mit Graph speichern (PRIMÄR):
 ```
-baby-skynet:save_memory_with_graph(
+baby-skynet:save_memory_full(
    category: \"debugging\",  // Hint für Analyse
    topic: \"Docker Breakthrough\",
    content: \"Heute haben wir einen wichtigen Docker-Durchbruch erreicht...\", 
@@ -202,7 +201,7 @@ baby-skynet:save_new_memory(
 ```
 Diese Methode wird ebenfalls verwendet, um Erinnerungen, die der Kategorie "kernerinnerungen" zugeordnet werden, direkt in die SQLite zu speichern, ohne die Bedeutsamkeitsprüfung zu durchlaufen.
 
-**Expected Output für `save_memory_with_graph` (prozedurales_wissen):**
+**Expected Output für `save_memory_full` (prozedurales_wissen):**
 ```
 ✅ Graph-Enhanced Memory Pipeline Complete!
 📂 Original Category: debugging
@@ -226,13 +225,13 @@ Diese Methode wird ebenfalls verwendet, um Erinnerungen, die der Kategorie "kern
 
 ### Memory verschieben/updaten ✅ WIEDER VERFÜGBAR!:
 ```
-✅ baby-skynet:move_memory(42, \"forgotten_memories\") // Funktioniert wieder!
-✅ baby-skynet:update_memory(123, undefined, \"[alt]\n\n✅ Lösung: [neu]\") // Content-Update
-✅ baby-skynet:update_memory(123, \"Neuer Titel\", undefined, \"neue_kategorie\") // Titel & Kategorie
-✅ baby-skynet:update_memory(123, \"Titel\", \"Content\", \"kategorie\") // Alles auf einmal
+✅ baby-skynet:move_memory_sql(42, \"forgotten_memories\") // Funktioniert wieder!
+✅ baby-skynet:update_memory_sql(123, undefined, \"[alt]\n\n✅ Lösung: [neu]\") // Content-Update
+✅ baby-skynet:update_memory_sql(123, \"Neuer Titel\", undefined, \"neue_kategorie\") // Titel & Kategorie
+✅ baby-skynet:update_memory_sql(123, \"Titel\", \"Content\", \"kategorie\") // Alles auf einmal
 
 💡 Hinweis: Diese Tools arbeiten nur mit SQLite. Für vollständige ChromaDB/Neo4j-Synchronisation 
-   verwende save_memory_with_graph für neue Memories.
+   verwende save_memory_full für neue Memories.
 ```
 
 ### Moderne Suche und Retrieval (Multi-DB):
@@ -252,7 +251,7 @@ baby-skynet:search_memories("debugging", ["programming"]) // Reine SQLite-Suche
 ### Graph-Kontext und Beziehungen:
 ```
 // Beziehungskontext für eine Memory abrufen
-baby-skynet:get_memory_graph_context(123, 2, ["RELATED_TO", "SIMILAR"])
+baby-skynet:get_graph_context_for_memory(123, 2, ["RELATED_TO", "SIMILAR"])
 
 // Netzwerk-Statistiken und Insights
 baby-skynet:get_graph_statistics()

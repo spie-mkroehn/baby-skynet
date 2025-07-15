@@ -37,22 +37,38 @@ export class ContainerConfigManager {
     });
   }
 
+  private static normalizePath(inputPath: string): string {
+    // Normalize path separators and resolve any relative components
+    const normalized = path.normalize(inputPath);
+    // Ensure UTF-8 encoding is preserved
+    return Buffer.from(normalized, 'utf8').toString('utf8');
+  }
+
   static getContainerConfig(): ContainerConfig {
     if (this.config) {
       return this.config;
     }
 
-    // Load environment variables
-    dotenv.config();
+    // Load environment variables with explicit UTF-8 encoding
+    dotenv.config({ encoding: 'utf8' });
 
-    const dataRoot = process.env.CONTAINER_DATA_ROOT || './data/containers';
+    const dataRoot = this.normalizePath(process.env.CONTAINER_DATA_ROOT || './data/containers');
+    
+    // Debug: Log the original and normalized paths
+    if (process.env.DEBUG_BABY_SKYNET) {
+      Logger.debug('Container data root paths', {
+        original: process.env.CONTAINER_DATA_ROOT,
+        normalized: dataRoot,
+        encoding: 'utf8'
+      });
+    }
     
     this.config = {
       engine: (process.env.CONTAINER_ENGINE as 'podman' | 'docker') || 'podman',
       dataRoot,
       postgres: {
         image: process.env.POSTGRES_IMAGE || 'postgres:15',
-        dataPath: this.expandEnvironmentVariables(process.env.POSTGRES_DATA_PATH || path.join(dataRoot, 'postgres')),
+        dataPath: this.normalizePath(this.expandEnvironmentVariables(process.env.POSTGRES_DATA_PATH || path.join(dataRoot, 'postgres'))),
         port: parseInt(process.env.POSTGRES_PORT || '5432'),
         database: process.env.POSTGRES_DB || 'baby_skynet',
         user: process.env.POSTGRES_USER || 'claude',
@@ -60,13 +76,13 @@ export class ContainerConfigManager {
       },
       chromadb: {
         image: process.env.CHROMADB_IMAGE || 'chromadb/chroma:latest',
-        dataPath: this.expandEnvironmentVariables(process.env.CHROMADB_DATA_PATH || path.join(dataRoot, 'chromadb')),
+        dataPath: this.normalizePath(this.expandEnvironmentVariables(process.env.CHROMADB_DATA_PATH || path.join(dataRoot, 'chromadb'))),
         port: parseInt(process.env.CHROMA_PORT || '8000')
       },
       neo4j: {
         image: process.env.NEO4J_IMAGE || 'neo4j:5-community',
-        dataPath: this.expandEnvironmentVariables(process.env.NEO4J_DATA_PATH || path.join(dataRoot, 'neo4j')),
-        logsPath: this.expandEnvironmentVariables(process.env.NEO4J_LOGS_PATH || path.join(dataRoot, 'neo4j-logs')),
+        dataPath: this.normalizePath(this.expandEnvironmentVariables(process.env.NEO4J_DATA_PATH || path.join(dataRoot, 'neo4j'))),
+        logsPath: this.normalizePath(this.expandEnvironmentVariables(process.env.NEO4J_LOGS_PATH || path.join(dataRoot, 'neo4j-logs'))),
         httpPort: 7474,
         boltPort: parseInt(process.env.NEO4J_PORT || '7687'),
         auth: process.env.NEO4J_AUTH || 'neo4j/baby-skynet'

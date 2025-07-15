@@ -215,7 +215,8 @@ async function runCoreSystemTests() {
     try {
       const containerManager = new ContainerManager();
       logTest('ContainerManager instantiation', !!containerManager);
-      logTest('ContainerManager has start method', typeof containerManager.ensureBabySkyNetContainers === 'function');
+      logTest('ContainerManager has status check method', typeof containerManager.ensureBabySkyNetContainers === 'function');
+      logTest('ContainerManager has getMultipleContainerStatus method', typeof containerManager.getMultipleContainerStatus === 'function');
     } catch (error) {
       logTest('ContainerManager', false, error.message);
     }
