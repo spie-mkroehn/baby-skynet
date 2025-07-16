@@ -34,6 +34,7 @@ set "NEO4J_LOGS_PATH="
 set "POSTGRES_DB="
 set "POSTGRES_USER="
 set "POSTGRES_PASSWORD="
+set "NEO4J_AUTH="
 
 REM Use PowerShell to read .env file with UTF-8 encoding to handle umlauts
 for /f "usebackq tokens=1,2 delims==" %%a in (`powershell -Command "Get-Content .env -Encoding UTF8 | Where-Object { $_ -notmatch '^#' -and $_ -match '=' } | ForEach-Object { $_.Trim() }"`) do (
@@ -60,6 +61,7 @@ if not defined NEO4J_LOGS_PATH set "NEO4J_LOGS_PATH=%CONTAINER_DATA_ROOT%\neo4j-
 if not defined POSTGRES_DB set "POSTGRES_DB=baby_skynet"
 if not defined POSTGRES_USER set "POSTGRES_USER=claude"
 if not defined POSTGRES_PASSWORD set "POSTGRES_PASSWORD=skynet2025"
+if not defined NEO4J_AUTH set "NEO4J_AUTH=neo4j/baby-skynet"
 
 echo [CONFIG] Container data paths:
 echo    Root: %CONTAINER_DATA_ROOT%
@@ -83,16 +85,32 @@ echo [OK] Podman is available
 REM Check if Podman machine is running
 echo.
 echo [2/5] Checking Podman machine status...
-podman machine list | findstr "Currently running" >nul 2>&1
+REM Use more robust search with multiple patterns
+podman machine list | findstr /i "running" >nul 2>&1
 if %errorlevel% neq 0 (
     echo [WARN] Podman machine not running, starting...
     podman machine start
+    REM Wait a moment for the machine to fully start
+    timeout /t 5 /nobreak >nul
+    REM Verify that the machine is actually running now with more robust check
+    podman machine list | findstr /i "running" >nul 2>&1
     if %errorlevel% neq 0 (
-        echo [ERROR] Failed to start Podman machine
-        pause
-        exit /b 1
+        echo [ERROR] Failed to start Podman machine - machine still not running
+        echo [DEBUG] Current machine status:
+        podman machine list
+        echo [DEBUG] Trying alternative verification...
+        REM Alternative check: try a simple podman command to see if it works
+        podman version >nul 2>&1
+        if %errorlevel% equ 0 (
+            echo [OK] Podman machine is working (alternative verification successful)
+        ) else (
+            echo [ERROR] Podman machine is not working properly
+            pause
+            exit /b 1
+        )
+    ) else (
+        echo [OK] Podman machine started successfully
     )
-    echo [OK] Podman machine started
 ) else (
     echo [OK] Podman machine is already running
 )
@@ -154,7 +172,7 @@ podman run -d ^
     --restart unless-stopped ^
     -p 7474:7474 ^
     -p 7687:7687 ^
-    -e NEO4J_AUTH=neo4j/baby-skynet ^
+    -e NEO4J_AUTH=%NEO4J_AUTH% ^
     -e NEO4J_PLUGINS=["apoc"] ^
     -e NEO4J_apoc_export_file_enabled=true ^
     -e NEO4J_apoc_import_file_enabled=true ^

@@ -195,7 +195,7 @@ async function initializeNeo4j() {
     const neo4jConfig = {
       uri: process.env.NEO4J_URL || 'bolt://localhost:7687',
       username: process.env.NEO4J_USER || 'neo4j',
-      password: process.env.NEO4J_PASSWORD || 'password',
+      password: process.env.NEO4J_PASSWORD || 'baby-skynet',
       database: process.env.NEO4J_DATABASE || 'neo4j'
     };
     

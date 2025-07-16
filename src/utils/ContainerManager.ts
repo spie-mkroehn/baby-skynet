@@ -561,7 +561,7 @@ export class ContainerManager {
 
         // Try to connect to Neo4j
         const { stdout } = await execAsync(
-          `${this.containerEngine} exec ${containerName} cypher-shell -u neo4j -p password "RETURN 1" || echo "not ready"`
+          `${this.containerEngine} exec ${containerName} cypher-shell -u neo4j -p baby-skynet "RETURN 1" || echo "not ready"`
         );
         
         if (!stdout.includes('not ready') && !stdout.includes('ServiceUnavailable')) {

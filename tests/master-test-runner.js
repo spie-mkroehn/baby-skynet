@@ -6,7 +6,7 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -49,6 +49,13 @@ const TEST_SUITES = [
     file: 'factory-tests.js',
     description: 'All factory pattern implementations and integrations',
     critical: true
+  },
+  {
+    name: 'Security Audit Tests',
+    file: resolve(__dirname, 'security-audit-tests.cjs'),
+    description: 'Password configuration, hardcoded secrets, and security compliance',
+    critical: true,
+    isCommonJS: true  // Special flag for CommonJS modules
   }
 ];
 
@@ -66,6 +73,11 @@ class TestRunner {
     console.log('─'.repeat(60));
     
     const testPath = join(__dirname, suite.file);
+    
+    // Special handling for CommonJS modules
+    if (suite.isCommonJS) {
+      return this.runCommonJSTest(suite, testPath);
+    }
     
     return new Promise((resolve) => {
       const startTime = Date.now();
@@ -141,6 +153,67 @@ class TestRunner {
         resolve(false);
       });
     });
+  }
+
+  // Handle CommonJS test modules using dynamic import with file:// URL
+  async runCommonJSTest(suite) {
+    const startTime = Date.now();
+    
+    try {
+      console.log(`📋 Running ${suite.name}...`);
+      
+      // Use dynamic import with file:// URL to load CommonJS module
+      const fileUrl = new URL(`file://${suite.file}`);
+      const module = await import(fileUrl);
+      const TestClass = module.default || module;
+      
+      const testInstance = new TestClass();
+      
+      // Run the test and collect results
+      const results = await testInstance.runTests();
+      const duration = Date.now() - startTime;
+      const success = results.passed === results.total && results.failed === 0;
+      
+      this.results.push({
+        suite: suite.name,
+        success: success,
+        passed: results.passed,
+        failed: results.failed,
+        total: results.total,
+        duration: duration,
+        critical: suite.critical,
+        output: results.output || '',
+        errorOutput: results.errorOutput || ''
+      });
+      
+      this.totalPassed += results.passed;
+      this.totalFailed += results.failed;
+      
+      const status = success ? '✅ PASSED' : '❌ FAILED';
+      const criticalLabel = suite.critical ? ' [CRITICAL]' : '';
+      console.log(`\n${status} ${suite.name}${criticalLabel} (${duration}ms)`);
+      
+      return success;
+      
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      console.error(`❌ Failed to run ${suite.name}: ${error.message}`);
+      
+      this.results.push({
+        suite: suite.name,
+        success: false,
+        passed: 0,
+        failed: 1,
+        total: 1,
+        duration: duration,
+        critical: suite.critical,
+        output: '',
+        errorOutput: error.message
+      });
+      
+      this.totalFailed += 1;
+      return false;
+    }
   }
 
   async runAllTests() {

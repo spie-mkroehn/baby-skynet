@@ -182,7 +182,7 @@ class MemoryPipelineTests {
       neo4jClient = new Neo4jClient({
         uri: process.env.NEO4J_URI || 'bolt://localhost:7687',
         username: process.env.NEO4J_USERNAME || 'neo4j',
-        password: process.env.NEO4J_PASSWORD || 'password',
+        password: process.env.NEO4J_PASSWORD || 'baby-skynet',
         database: process.env.NEO4J_DATABASE || 'neo4j'
       });
       
