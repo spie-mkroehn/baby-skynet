@@ -1112,37 +1112,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!query) throw new Error('Query parameter is required');
         
         const result = await memoryDb.searchMemoriesIntelligent(query, categories, enableReranking, rerankStrategy);
-        if (!result.success) {
-          return { content: [{ type: 'text', text: `❌ Intelligente Suche fehlgeschlagen: ${result.error}` }] };
+        
+        // Check if we got valid results
+        if (!result || !result.results) {
+          return { content: [{ type: 'text', text: `❌ Intelligente Suche fehlgeschlagen: Ungültiges Ergebnis-Format` }] };
         }
         
-        const strategyIcon = result.search_strategy === 'hybrid' ? '🔄' : '🧠';
+        const strategyIcon = '🔄'; // Default icon
         const rerankIcon = enableReranking ? ' ⚡' : '';
-        const totalResults = result.combined_results.length;
-        const resultsToShow = enableReranking && result.reranked_results ? result.reranked_results : result.combined_results;
+        const totalResults = result.results.length;
+        const resultsToShow = result.results;
         
         if (totalResults === 0) {
-          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Strategie: ${strategyIcon} ${result.search_strategy}${rerankIcon}${enableReranking ? ` (${result.rerank_strategy})` : ''}` }] };
+          return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.\n\n🤖 Strategie: ${strategyIcon} intelligent search${rerankIcon}${enableReranking ? ` (${result.rerank_strategy || rerankStrategy})` : ''}` }] };
         }
         
         const memoryText = resultsToShow.slice(0, 15).map((memory: any) => {
-          const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🔗';
+          const sourceIcon = memory.source === 'sql' ? '💾' : memory.source === 'chroma' ? '🧠' : '🔗';
           const relevanceScore = memory.relevance_score ? ` (${(memory.relevance_score * 100).toFixed(0)}%)` : '';
-          const rerankScore = enableReranking && memory.rerank_score ? ` ⚡${(memory.rerank_score * 100).toFixed(0)}%` : '';
-          const isReconstruction = memory.is_concept_reconstruction ? ' [Rekonstruiert]' : '';
-          return `${sourceIcon} ${memory.date || 'N/A'} | 📂 ${memory.category} | 🏷️ ${memory.topic}${relevanceScore}${rerankScore}${isReconstruction}\n${memory.content}\n`;
-        }).join('\n---\n\n');
+          const categoryDisplay = memory.category ? ` [${memory.category}]` : '';
+          
+          return `${sourceIcon} **${memory.topic || 'Untitled'}**${categoryDisplay}${relevanceScore}\n📝 ${(memory.content || '').substring(0, 300)}${(memory.content || '').length > 300 ? '...' : ''}\n🆔 ID: ${memory.id || 'Unknown'}\n`;
+        }).join('\n');
         
-        const categoryFilter = categories ? ` (in ${categories.join(', ')})` : '';
-        const rerankInfo = enableReranking ? `\n⚡ Reranking: ${result.rerank_strategy}` : '';
+        const sourceSummary = result.sources ? 
+          `• SQL Database: ${result.sources.sql?.count || 0} Treffer\n• ChromaDB: ${result.sources.chroma?.count || 0} semantische Treffer` :
+          `• Gefunden: ${totalResults} Ergebnisse`;
+        
+        const rerankInfo = result.reranked ? `\n🎯 Reranking: ${result.rerank_strategy} Strategie angewendet` : '';
+        const executionTime = result.execution_time ? ` (${result.execution_time}ms)` : '';
+        
         return { 
           content: [{ 
             type: 'text', 
-            text: `🤖 Intelligente Suchergebnisse für "${query}"${categoryFilter}:\n\n📊 Strategie: ${strategyIcon} ${result.search_strategy}${rerankInfo}\n📈 Ergebnisse: ${totalResults} gefunden\n\n🎯 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
+            text: `🧠 Intelligente Suchergebnisse für "${query}"${rerankIcon}${executionTime}:\n\n📊 Statistik:\n${sourceSummary}${rerankInfo}\n\n🎯 Top ${Math.min(15, totalResults)} Ergebnisse:\n\n${memoryText}` 
           }] 
         };
       } catch (error) {
-        return { content: [{ type: 'text', text: `❌ Fehler bei der intelligenten Suche: ${error}` }] };
+        return { content: [{ type: 'text', text: `❌ Intelligente Suche fehlgeschlagen: ${error}` }] };
       }
 
     // case 'search_concepts_only':
@@ -1516,16 +1523,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         const result = await memoryDb.searchMemoriesWithGraph(query, categories, includeRelated, maxRelationshipDepth);
         
-        const totalResults = result.combined_results.length;
-        const graphInfo = result.graph_relationships.length > 0 
-          ? `\n🕸️ Graph-Beziehungen: ${result.graph_relationships.length} gefunden`
+        const totalResults = result.results.length;
+        const graphInfo = result.relationships.length > 0 
+          ? `\n🕸️ Graph-Beziehungen: ${result.relationships.length} gefunden`
           : '';
         
         if (totalResults === 0) {
           return { content: [{ type: 'text', text: `🔍 Keine Ergebnisse für "${query}" gefunden.${graphInfo}` }] };
         }
         
-        const memoryText = result.combined_results.slice(0, 10).map((memory: any) => {
+        const memoryText = result.results.slice(0, 10).map((memory: any) => {
           const sourceIcon = memory.source === 'sqlite' ? '💾' : memory.source === 'chroma_only' ? '🧠' : '🕸️';
           return `${sourceIcon} **${memory.topic}** (${memory.category})\n${memory.content}\n📅 ${memory.date}`;
         }).join('\n\n');

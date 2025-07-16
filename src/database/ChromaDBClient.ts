@@ -173,6 +173,69 @@ export class ChromaDBClient {
     }
   }
 
+  /**
+   * Search for similar memories using semantic search
+   * Required by the MemoryPipelineBase interface
+   */
+  async searchSimilar(query: string, limit: number = 5, categories?: string[]): Promise<{ results: any[]; error?: string }> {
+    if (!this.collection) {
+      return { results: [], error: 'ChromaDB not initialized' };
+    }
+
+    try {
+      Logger.debug('ChromaDB searchSimilar called', { query, limit, categories });
+
+      // Build filter for categories if provided
+      let filter: any = undefined;
+      if (categories && categories.length > 0) {
+        filter = {
+          "category": { "$in": categories }
+        };
+      }
+
+      // Perform semantic search using ChromaDB's query method
+      const searchResults = await this.collection.query({
+        queryTexts: [query],
+        nResults: limit,
+        where: filter
+      });
+
+      // Transform ChromaDB results to the expected format
+      const results = [];
+      const documents = searchResults.documents[0] || [];
+      const metadatas = searchResults.metadatas?.[0] || [];
+      const ids = searchResults.ids[0] || [];
+      const distances = searchResults.distances?.[0] || [];
+
+      for (let i = 0; i < documents.length; i++) {
+        const metadata = metadatas[i] || {};
+        results.push({
+          id: ids[i],
+          content: documents[i],
+          source_memory_id: metadata.source_memory_id || null,
+          concept_title: metadata.concept_title || null,
+          category: metadata.category || null,
+          timestamp: metadata.timestamp || null,
+          distance: distances[i] || null,
+          similarity_score: distances[i] ? (1 - distances[i]) : null,
+          source: 'chromadb'
+        });
+      }
+
+      Logger.debug('ChromaDB searchSimilar completed', { 
+        query, 
+        resultCount: results.length,
+        hasFilter: !!filter 
+      });
+
+      return { results };
+
+    } catch (error) {
+      Logger.error('ChromaDB searchSimilar failed', { query, error });
+      return { results: [], error: String(error) };
+    }
+  }
+
   async getCollectionInfo(): Promise<any> {
     if (!this.collection) {
       return { initialized: false };
